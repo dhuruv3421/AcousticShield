@@ -1,8 +1,5 @@
-spectrograms/
 dataset_final/
-*.wav
-*.png
-*.jpg
 venv/
 __pycache__/
-models/*.h5
+models/
+*.pth
