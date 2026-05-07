@@ -12,6 +12,11 @@ from datetime import datetime
 import streamlit as st
 from panns_inference import AudioTagging
 import base64
+import json
+import difflib
+# At the top of app.py, with other imports:
+from audioset_suggestions import AUDIOSET_SUGGESTION_DICT
+import gdown
 # ──────────────────────────────────────────────────────────────
 #  PAGE CONFIG
 # ──────────────────────────────────────────────────────────────
@@ -31,91 +36,85 @@ st.markdown("""
 
 html, body, [class*="css"] {
     font-family: 'Rajdhani', sans-serif;
-    background-color: #0a0e1a;
-    color: #c9d1e0;
+    background-color: #f0f4f0;
+    color: #1a2e1a;
 }
-/* Hide sidebar toggle and sidebar entirely */
+
 [data-testid="collapsedControl"] { display: none !important; }
-section[data-testid="stSidebar"] { display: none !important; }
+section[data-testid="stSidebar"]  { display: none !important; }
 
-h1, h2, h3 { font-family: 'Rajdhani', sans-serif; font-weight: 700; letter-spacing: 2px; }
+h1, h2, h3 {
+    font-family: 'Rajdhani', sans-serif;
+    font-weight: 700;
+    letter-spacing: 2px;
+    color: #1a3a1a;
+}
 
+/* ── Cards ── */
 .card {
-    background: #0f1626;
-    border: 1px solid #1e2a40;
-    border-radius: 8px;
+    background: #ffffff;
+    border: 1.5px solid #c8e0c8;
+    border-radius: 10px;
     padding: 20px 24px;
     margin-bottom: 16px;
 }
 .card-threat {
-    background: #1a0a0e;
-    border: 1px solid #ff2244;
-    border-radius: 8px;
+    background: #fff8f8;
+    border: 2px solid #e53935;
+    border-radius: 10px;
     padding: 20px 24px;
     margin-bottom: 16px;
-    animation: threatglow 1.5s infinite;
-}
-@keyframes threatglow {
-    0%,100% { box-shadow: 0 0 8px #ff224440; }
-    50%      { box-shadow: 0 0 24px #ff224480; }
 }
 
+/* ── Badges ── */
 .badge-threat {
     display: inline-block;
-    background: #ff2244;
-    color: white;
+    background: #c62828;
+    color: #ffffff;
     font-family: 'Share Tech Mono', monospace;
     font-size: 13px;
     padding: 4px 12px;
     border-radius: 4px;
     letter-spacing: 1px;
-    animation: pulse 1.2s infinite;
 }
 .badge-safe {
     display: inline-block;
-    background: #00c853;
-    color: #001a0a;
+    background: #2e7d32;
+    color: #e8f5e8;
     font-family: 'Share Tech Mono', monospace;
     font-size: 13px;
     padding: 4px 12px;
     border-radius: 4px;
     letter-spacing: 1px;
 }
-@keyframes pulse {
-    0%,100% { box-shadow: 0 0 6px #ff2244; }
-    50%      { box-shadow: 0 0 18px #ff2244; }
-}
 
+/* ── Alert banner (active threat) ── */
 .alert-banner {
-    background: linear-gradient(90deg, #2a0010 0%, #1a0008 100%);
-    border: 2px solid #ff2244;
-    border-radius: 8px;
+    background: #fff8f8;
+    border: 2px solid #e53935;
+    border-radius: 10px;
     padding: 18px 24px;
     margin-bottom: 16px;
-    animation: alertpulse 0.8s infinite;
-}
-@keyframes alertpulse {
-    0%,100% { border-color: #ff2244; box-shadow: 0 0 12px #ff224460; }
-    50%      { border-color: #ff6680; box-shadow: 0 0 30px #ff224499; }
 }
 .alert-banner .alert-title {
     font-family: 'Share Tech Mono', monospace;
-    font-size: 1.1rem;
-    color: #ff4466;
+    font-size: 1.05rem;
+    color: #c62828;
     letter-spacing: 3px;
     font-weight: bold;
 }
 .alert-banner .alert-body {
     font-family: 'Rajdhani', sans-serif;
-    font-size: 14px;
-    color: #ffaaaa;
+    font-size: 15px;
+    color: #7a2a2a;
     margin-top: 6px;
 }
 
+/* ── Metric tiles ── */
 .metric-tile {
-    background: #0f1626;
-    border: 1px solid #1e2a40;
-    border-radius: 8px;
+    background: #ffffff;
+    border: 1.5px solid #c8e0c8;
+    border-radius: 10px;
     padding: 16px;
     text-align: center;
 }
@@ -123,157 +122,234 @@ h1, h2, h3 { font-family: 'Rajdhani', sans-serif; font-weight: 700; letter-spaci
     font-family: 'Share Tech Mono', monospace;
     font-size: 2.2rem;
     line-height: 1;
-    color: #4fc3f7;
 }
 .metric-tile .lbl {
-    font-size: 12px;
+    font-size: 13px;
     letter-spacing: 1.5px;
     text-transform: uppercase;
-    color: #6b7fa0;
-    margin-top: 4px;
+    color: #5a7a5a;
+    margin-top: 5px;
 }
 
-.bar-wrap { background: #1a2236; border-radius: 4px; height: 8px; margin: 4px 0 8px; }
-.bar-fill  { height: 8px; border-radius: 4px; transition: width 0.4s ease; }
+/* ── Progress bars ── */
+.bar-wrap { background: #deeede; border-radius: 4px; height: 9px; margin: 4px 0 8px; }
+.bar-fill  { height: 9px; border-radius: 4px; transition: width 0.4s ease; }
 
+/* ── Waveform placeholder ── */
 .waveform-placeholder {
-    background: #0d1120;
-    border: 1px solid #1e2a40;
-    border-radius: 6px;
+    background: #f5faf5;
+    border: 1.5px solid #c8e0c8;
+    border-radius: 8px;
     height: 60px;
     display: flex; align-items: center; justify-content: center;
     font-family: 'Share Tech Mono', monospace;
-    font-size: 11px;
-    color: #2a3a54;
+    font-size: 12px;
+    color: #8aaa8a;
     letter-spacing: 2px;
 }
 
+/* ── Top bar ── */
 .top-bar {
-    background: linear-gradient(90deg, #0a0e1a 0%, #0f1e36 50%, #0a0e1a 100%);
-    border-bottom: 1px solid #1e2a40;
-    padding: 12px 0 8px;
-    margin-bottom: 24px;
+    background: linear-gradient(135deg, #1a3a1a 0%, #2d5a2d 50%, #1a3a1a 100%);
+    border-bottom: 3px solid #4a9a4a;
+    padding: 16px 0 12px;
+    margin-bottom: 20px;
     display: flex;
     align-items: center;
     justify-content: center;
-    gap: 18px;
+    flex-direction: column;
+    gap: 6px;
+    border-radius: 0 0 12px 12px;
 }
 .top-bar h1 {
     font-size: 2.2rem;
-    color: #e8f0ff;
+    color: #e8f5e8;
     letter-spacing: 6px;
     margin: 0;
-    text-shadow: 0 0 30px #4fc3f733;
 }
 .top-bar .sub {
-    font-size: 30px;
-    color: #4fc3f7;
-    letter-spacing: 4px;
+    font-family: 'Share Tech Mono', monospace;
+
+    font-size: 1.3rem;
+
+    font-weight: 700;
+
+    color: #ffffff;
+
+    letter-spacing: 6px;
+
     text-transform: uppercase;
+
+    text-shadow:
+        0 0 8px rgba(255,255,255,0.25),
+        0 0 18px rgba(120,255,180,0.15);
+
+    margin-top: 8px;
 }
 .top-bar-logo {
-    height: 300px;
+    height: 280px;
     width: auto;
     object-fit: contain;
     border-radius: 8px;
+    filter: drop-shadow(0 0 12px #4a9a4a55);
 }
 
+/* ── Model status bar ── */
 .model-status-bar {
-    background: #0d1120;
-    border: 1px solid #1e2a40;
-    border-radius: 6px;
-    padding: 8px 18px;
+    background: #ffffff;
+    border: 1.5px solid #b8d8b8;
+    border-radius: 8px;
+    padding: 9px 18px;
     display: flex;
     align-items: center;
     gap: 10px;
     font-family: 'Share Tech Mono', monospace;
-    font-size: 12px;
+    font-size: 13px;
+    color: #2d4a2d;
     margin-bottom: 18px;
 }
 
+/* ── Status dots ── */
 .dot-live {
     display: inline-block;
     width: 10px; height: 10px;
     border-radius: 50%;
-    background: #ff2244;
+    background: #c62828;
     margin-right: 8px;
-    animation: pulse 1s infinite;
+    animation: pulsered 1s infinite;
+}
+@keyframes pulsered {
+    0%,100% { box-shadow: 0 0 4px #c62828; }
+    50%      { box-shadow: 0 0 12px #c62828; }
 }
 .dot-idle {
     display: inline-block;
     width: 10px; height: 10px;
     border-radius: 50%;
-    background: #3a4a60;
+    background: #b8cbb8;
     margin-right: 8px;
 }
 .dot-safe {
     display: inline-block;
     width: 10px; height: 10px;
     border-radius: 50%;
-    background: #00c853;
+    background: #2e7d32;
     margin-right: 8px;
-    animation: safepulse 2s infinite;
+    animation: safegreen 2s infinite;
 }
-@keyframes safepulse {
-    0%,100% { box-shadow: 0 0 4px #00c853; }
-    50%      { box-shadow: 0 0 12px #00c853; }
+@keyframes safegreen {
+    0%,100% { box-shadow: 0 0 4px #2e7d32; }
+    50%      { box-shadow: 0 0 12px #2e7d32; }
 }
 
+/* ── Interval info ── */
 .interval-info {
-    background: #0a1020;
-    border: 1px solid #1e3050;
-    border-radius: 6px;
+    background: #f0f7f0;
+    border: 1.5px solid #b8d8b8;
+    border-radius: 8px;
     padding: 10px 14px;
     font-family: 'Share Tech Mono', monospace;
-    font-size: 12px;
-    color: #4fc3f7;
+    font-size: 13px;
+    color: #2d5a2d;
     margin-top: 8px;
 }
 
+/* ── File uploader ── */
 [data-testid="stFileUploader"] {
-    border: 2px dashed #1e2a40 !important;
+    border: 2px dashed #7ab87a !important;
     border-radius: 8px;
-    background: #0d1120;
+    background: #f5faf5;
 }
+
+/* ── Buttons ── */
 .stButton > button {
     font-family: 'Rajdhani', sans-serif;
     font-weight: 700;
+    font-size: 15px;
     letter-spacing: 1.5px;
-    border-radius: 6px;
+    border-radius: 8px;
     border: none;
     transition: all 0.2s;
 }
-.stButton > button:hover { filter: brightness(1.15); }
+.stButton > button[kind="primary"] {
+    background: #2d5a2d !important;
+    color: #e8f5e8 !important;
+}
+.stButton > button[kind="primary"]:hover {
+    background: #3d7a3d !important;
+}
+.stButton > button:not([kind="primary"]) {
+    background: #ffffff;
+    color: #2d5a2d;
+    border: 1.5px solid #7ab87a;
+}
+.stButton > button:not([kind="primary"]):hover {
+    background: #f0f7f0;
+}
 
-/* ── Saved Clips tab ── */
+/* ── Inputs & sliders ── */
+.stTextInput > div > div > input {
+    background: #f5faf5;
+    border: 1.5px solid #b8d8b8;
+    border-radius: 8px;
+    color: #1a3a1a;
+    font-family: 'Rajdhani', sans-serif;
+    font-size: 15px;
+    padding: 8px 12px;
+}
+.stSelectbox > div > div {
+    background: #f5faf5;
+    border: 1.5px solid #b8d8b8;
+    border-radius: 8px;
+    color: #1a3a1a;
+}
+
+/* ── Saved clips ── */
 .clip-card {
-    background: #120810;
-    border: 1px solid #ff224455;
+    background: #fff8f8;
+    border: 1.5px solid #e5b8b8;
     border-radius: 8px;
     padding: 14px 18px;
     margin-bottom: 12px;
-    transition: border-color 0.2s;
-}
-.clip-card:hover { border-color: #ff2244aa; }
-.clip-meta {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    flex-wrap: wrap;
-    margin-bottom: 10px;
 }
 .clip-summary-bar {
-    background: #0a0e1a;
-    border: 1px solid #1e2a40;
-    border-radius: 6px;
+    background: #f5faf5;
+    border: 1.5px solid #c8e0c8;
+    border-radius: 8px;
     padding: 10px 16px;
     font-family: 'Share Tech Mono', monospace;
-    font-size: 12px;
-    color: #3a4a60;
+    font-size: 13px;
+    color: #4a7a4a;
     margin-bottom: 16px;
     display: flex;
     align-items: center;
     gap: 16px;
+}
+
+/* ── Tabs override ── */
+.stTabs [data-baseweb="tab-list"] {
+    background: #ffffff;
+    border: 1.5px solid #c8e0c8;
+    border-radius: 10px;
+    padding: 4px;
+    gap: 4px;
+}
+.stTabs [data-baseweb="tab"] {
+    background: transparent;
+    color: #4a7a4a;
+    font-family: 'Rajdhani', sans-serif;
+    font-weight: 600;
+    font-size: 15px;
+    border-radius: 7px;
+}
+.stTabs [aria-selected="true"] {
+    background: #2d5a2d !important;
+    color: #e8f5e8 !important;
+}
+
+/* ── Streamlit default text size boost ── */
+p, li, .stMarkdown, label, .stSelectbox label {
+    font-size: 15px !important;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -285,73 +361,46 @@ SAMPLE_RATE      = 32000
 TOP_K            = 5
 THREAT_THRESHOLD = 0.20
 THREAT_SAVE_DIR  = "threat_clips"
-MODEL_PATH       = r"models/Cnn14_mAP=0.431.pth"
+import gdown
+
+MODEL_PATH = "models/Cn14_mAP=0.431.pth"
+
+# Google Drive direct download URL
+MODEL_URL = "https://drive.google.com/uc?id=16sTZkg810HRtw66yAZxb6JyXFgR1M0hK"
+
+# Create models folder if missing
+os.makedirs("models", exist_ok=True)
+
+# Download model automatically if not present
+if not os.path.exists(MODEL_PATH):
+    with st.spinner("Downloading AI model... Please wait."):
+        gdown.download(MODEL_URL, MODEL_PATH, quiet=False)
 DEVICE           = "cpu"
 LOGO_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "acoustic_shield_logo.png")
 
-THREAT_KEYWORDS = [
-    "gunshot", "gunfire", "gun", "pistol", "rifle", "shotgun", "firearm",
-    "explosion", "blast", "artillery", "bomb", "missile", "grenade",
-    "firecracker", "fireworks", "detonation", "bang", "shot",
-    "chainsaw", "power tool", "drill", "cutting", "grinding", "sawing",
-    "tools", "wood", "filing", "rasp", "jackhammer", "angle grinder",
-    "circular saw", "band saw", "lathe", "milling", "welding", "nail gun",
-    "staple gun", "pneumatic", "compressor", "belt sander",
-    "engine", "motor", "vehicle", "truck", "motorcycle", "helicopter",
-    "heavy engine", "diesel", "tractor", "bulldozer", "excavator",
-    "aircraft", "jet", "turbine", "train", "subway", "ambulance",
-    "police car", "fire engine", "snowmobile", "ATV", "boat engine",
-    "glass", "breaking", "shatter", "impact", "metal", "hammer",
-    "knock", "crash", "thud", "collision", "smash", "bang", "clatter",
-    "crack", "crunch", "slam", "drop", "fall", "burst",
-    "siren", "alarm", "scream", "shout", "yell", "cry", "wail",
-    "emergency", "warning", "alert", "klaxon", "horn", "beeping",
-    "smoke alarm", "fire alarm", "burglar alarm",
-    "dog bark", "barking", "growl", "roar", "hiss",
-    "fight", "struggle", "breaking in", "thud", "punching",
-    "slap", "whip", "electric shock",
-    "thunder", "lightning", "earthquake", "landslide", "avalanche",
-    "flood", "storm", "tornado", "hail",
-    "factory", "industrial", "machine", "conveyor", "press",
-    "forklift", "crane", "generator", "pump", "boiler",
-]
-
-THREAT_CATEGORIES = {
-    "weapon":      ["gunshot", "gunfire", "gun", "pistol", "rifle", "shotgun", "firearm",
-                    "explosion", "blast", "artillery", "bomb", "missile", "grenade",
-                    "firecracker", "fireworks", "detonation", "bang", "shot"],
-    "tool":        ["chainsaw", "power tool", "drill", "cutting", "grinding", "sawing",
-                    "tools", "wood", "filing", "rasp", "jackhammer", "angle grinder",
-                    "circular saw", "band saw", "lathe", "milling", "welding", "nail gun",
-                    "pneumatic", "compressor", "belt sander"],
-    "vehicle":     ["engine", "motor", "vehicle", "truck", "motorcycle", "helicopter",
-                    "heavy engine", "diesel", "tractor", "bulldozer", "excavator",
-                    "aircraft", "jet", "turbine", "train", "subway", "boat engine"],
-    "impact":      ["glass", "breaking", "shatter", "impact", "metal", "hammer",
-                    "knock", "crash", "thud", "collision", "smash", "crack", "slam"],
-    "emergency":   ["siren", "alarm", "scream", "shout", "yell", "cry", "wail",
-                    "emergency", "warning", "klaxon", "horn", "smoke alarm", "fire alarm"],
-    "environmental": ["thunder", "lightning", "earthquake", "landslide",
-                      "avalanche", "flood", "storm", "tornado", "hail"],
-    "industrial":  ["factory", "industrial", "machine", "conveyor", "press",
-                    "forklift", "crane", "generator", "pump", "boiler"],
-}
+# ── Dynamic keyword loading ──────────────────────────────────
+# Hardcoded lists are now loaded from JSON at startup.
+# These will be overwritten from session_state during runtime.
+THREAT_KEYWORDS  = []   # populated from JSON via session_state
+THREAT_CATEGORIES = {}  # populated from JSON via session_state
 
 CATEGORY_COLORS = {
-    "weapon":        "#ff2244",
-    "tool":          "#ffa726",
-    "vehicle":       "#ab47bc",
-    "impact":        "#ef5350",
-    "emergency":     "#ff7043",
+    "weapon":"#ff2244",
+    "tool":"#ffa726",
+    "vehicle":"#ab47bc",
+    "impact":"#ef5350",
+    "emergency":"#ff7043",
     "environmental": "#29b6f6",
-    "industrial":    "#66bb6a",
+    "industrial":"#66bb6a",
+    "threat":  "#ff2244",
+    "natural": "#29f63a",
     "unknown":       "#78909c",
 }
 
 BAR_COLORS = {
     "threat": "#ff2244",
     "warn":   "#ffa726",
-    "safe":   "#4fc3f7",
+    "safe":   "#71f74f",
 }
 
 # ──────────────────────────────────────────────────────────────
@@ -377,12 +426,16 @@ def init_state():
         _result_q=queue.Queue(),
         mic_interval=3,
         active_tab=0,
+        active_tab_name="📂 File / Upload",
+        kw_data={},
+        kw_flat=[],
     )
     for k, v in defaults.items():
         if k not in st.session_state:
             st.session_state[k] = v
 
 init_state()
+
 
 # ──────────────────────────────────────────────────────────────
 #  AUTO MODEL LOADING
@@ -413,21 +466,44 @@ def predict_waveform(model, waveform: np.ndarray):
 
 def get_threat_category(label: str) -> str:
     label_lower = label.lower()
-    for cat, keywords in THREAT_CATEGORIES.items():
+    live_categories = st.session_state.get("kw_data", {})
+    for cat, keywords in live_categories.items():
         if any(k in label_lower for k in keywords):
             return cat
     return "unknown"
 
+# Categories that should NEVER trigger an alert
+NON_THREAT_CATEGORIES = {"natural"}
+
 def check_threat(predictions, threshold=None):
     if threshold is None:
         threshold = THREAT_THRESHOLD
+
+    live_categories = st.session_state.get("kw_data", {})
+
+    # Build a set of all keywords that belong to non-threat categories
+    safe_keywords = set()
+    for cat, keywords in live_categories.items():
+        if cat in NON_THREAT_CATEGORIES:
+            safe_keywords.update(keywords)
+
+    # Build a set of all keywords that belong to alertable categories
+    threat_keywords = set()
+    for cat, keywords in live_categories.items():
+        if cat not in NON_THREAT_CATEGORIES:
+            threat_keywords.update(keywords)
+
     best_label, best_score, best_cat = None, 0.0, None
     for label, score in predictions:
-        if score >= threshold and any(k in label.lower() for k in THREAT_KEYWORDS):
+        label_lower = label.lower()
+        is_safe_hit   = any(k in label_lower for k in safe_keywords)
+        is_threat_hit = any(k in label_lower for k in threat_keywords)
+        if score >= threshold and is_threat_hit and not is_safe_hit:
             if score > best_score:
                 best_label = label
                 best_score = score
                 best_cat   = get_threat_category(label)
+
     is_threat = best_label is not None
     return is_threat, best_label, best_score, best_cat
 
@@ -437,6 +513,94 @@ def normalize_waveform(waveform: np.ndarray) -> np.ndarray:
     if peak > 0:
         waveform /= (peak + 1e-9)
     return waveform
+
+# ──────────────────────────────────────────────────────────────
+#  KEYWORD JSON HELPERS
+# ──────────────────────────────────────────────────────────────
+KEYWORDS_JSON_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "threat_keywords.json")
+
+def load_threat_keywords_json() -> dict:
+    """Load keyword categories from JSON file."""
+    if os.path.exists(KEYWORDS_JSON_PATH):
+        with open(KEYWORDS_JSON_PATH, "r") as f:
+            return json.load(f)
+    return {}
+
+def save_threat_keywords_json(data: dict):
+    """Save keyword categories to JSON file."""
+    with open(KEYWORDS_JSON_PATH, "w") as f:
+        json.dump(data, f, indent=2)
+
+def get_flat_keywords(data: dict) -> list:
+    """Flatten all keywords from all categories into one list."""
+    flat = []
+    for keywords in data.values():
+        flat.extend(keywords)
+    return list(set(flat))
+
+def reload_keywords_into_session():
+    """Reload JSON into session state and rebuild flat keyword list."""
+    st.session_state.kw_data    = load_threat_keywords_json()
+    st.session_state.kw_flat    = get_flat_keywords(st.session_state.kw_data)
+
+# ──────────────────────────────────────────────────────────────
+#  SUGGESTION DICTIONARY
+# ──────────────────────────────────────────────────────────────
+def get_keyword_suggestions(query: str, existing_keywords: list) -> list:
+    """Return smart AudioSet-based suggestions while typing."""
+    if not query or len(query) < 2:
+        return []
+    query_lower = query.lower().strip()
+    suggestions = set()
+
+    # 1. Direct key match in suggestion dict
+    for key, values in AUDIOSET_SUGGESTION_DICT.items():
+        if query_lower in key or key in query_lower:
+            suggestions.update(values)
+
+    # 2. Partial key match (any word in query matches any word in key)
+    query_words = set(query_lower.split())
+    for key, values in AUDIOSET_SUGGESTION_DICT.items():
+        key_words = set(key.split())
+        if query_words & key_words:  # intersection
+            suggestions.update(values)
+
+    # 3. Value-level substring match in suggestion dict
+    for key, values in AUDIOSET_SUGGESTION_DICT.items():
+        for val in values:
+            if query_lower in val.lower() or val.lower().startswith(query_lower):
+                suggestions.update(values)
+                break
+
+    # 4. Fuzzy match against all suggestion dict values
+    all_dict_values = [v for vals in AUDIOSET_SUGGESTION_DICT.values() for v in vals]
+    close = difflib.get_close_matches(query_lower, all_dict_values, n=6, cutoff=0.5)
+    suggestions.update(close)
+
+    # 5. Fuzzy match against existing keywords in JSON
+    close2 = difflib.get_close_matches(query_lower, existing_keywords, n=4, cutoff=0.4)
+    suggestions.update(close2)
+
+    # 6. Substring match against existing keywords
+    for kw in existing_keywords:
+        if query_lower in kw.lower():
+            suggestions.add(kw)
+
+    # Remove already-existing keywords to avoid duplicates
+    suggestions = [s for s in suggestions if s not in existing_keywords]
+
+    # Sort: prioritize suggestions that start with the query
+    starts_with = [s for s in suggestions if s.lower().startswith(query_lower)]
+    others      = [s for s in suggestions if not s.lower().startswith(query_lower)]
+    return (starts_with + others)[:8]
+
+# ── Load keywords from JSON on startup ───────────────────────
+if not st.session_state.kw_data:
+    reload_keywords_into_session()
+
+# Keep module-level variables in sync so check_threat() works
+THREAT_KEYWORDS  = st.session_state.kw_flat
+THREAT_CATEGORIES = st.session_state.kw_data
 
 # ──────────────────────────────────────────────────────────────
 #  MIC MONITOR THREAD
@@ -512,12 +676,81 @@ def render_predictions(preds, is_thr, threshold=THREAT_THRESHOLD):
         </div>
         """, unsafe_allow_html=True)
 
+# def render_result_card(entry, threshold=THREAT_THRESHOLD):
+#     # badge = (
+#     #     '<span style="display:inline-block;background:#c62828;color:#ffffff;'
+#     #     'font-family:Share Tech Mono,monospace;font-size:13px;padding:4px 12px;'
+#     #     'border-radius:4px;letter-spacing:1px">⚠ THREAT</span>'
+#     #     if entry["is_threat"] else
+#     #     '<span style="display:inline-block;background:#2e7d32;color:#e8f5e8;'
+#     #     'font-family:Share Tech Mono,monospace;font-size:13px;padding:4px 12px;'
+#     #     'border-radius:4px;letter-spacing:1px">✔ SAFE</span>'
+#     # )
+    
+#     is_threat = entry["is_threat"]
+#     bg_color   = "#c62828" if is_threat else "#2e7d32"
+#     text_color = "#ffffff"  if is_threat else "#e8f5e8"
+#     badge_text = "⚠ THREAT" if is_threat else "✔ SAFE"
+    
+#     badge = (
+#         f'<span style="display:inline-block;background:{bg_color};color:{text_color};'
+#         f'font-family:Share Tech Mono,monospace;font-size:13px;padding:4px 12px;'
+#         f'border-radius:4px;letter-spacing:1px">{badge_text}</span>'
+#     )
+#     saved_note = ""
+#     if entry.get("saved"):
+#         saved_note = (f'<div style="font-size:11px;color:#4fc3f7;margin-top:6px;'
+#                       f'font-family:Share Tech Mono,monospace">💾 Saved: '
+#                       f'{os.path.basename(entry["saved"])}</div>')
+
+#     cat_pill = ""
+#     if entry.get("threat_category") and entry["is_threat"]:
+#         cat   = entry["threat_category"]
+#         color = CATEGORY_COLORS.get(cat, "#78909c")
+#         cat_pill = (f'<span style="display:inline-block;background:#0a1020;'
+#                     f'border:1px solid {color};color:{color};'
+#                     f'font-family:Share Tech Mono,monospace;font-size:11px;'
+#                     f'padding:2px 10px;border-radius:20px;margin-left:8px;'
+#                     f'letter-spacing:1px">{cat.upper()}</span>')
+
+#     dur_note = f' · {entry["duration"]}s' if entry.get("duration") else ""
+#     card_class = "card-threat" if entry["is_threat"] else "card"
+
+#     st.markdown(f"""
+#     <div class="{card_class}">
+#       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+#         <div>
+#           <span style="font-family:Share Tech Mono,monospace;font-size:12px;color:#3a4a60">
+#             {entry['time']}{dur_note} · {entry['source']}
+#           </span>
+#           {cat_pill}
+#         </div>
+#         {badge}
+#       </div>
+#     </div>
+#     """, unsafe_allow_html=True)
+
+#     if entry["is_threat"] and entry.get("threat_label"):
+#         st.markdown(f"""
+#         <div style="background:#200810;border-left:3px solid #ff2244;
+#                     padding:8px 12px;border-radius:4px;margin-bottom:12px;
+#                     font-family:Share Tech Mono,monospace;font-size:12px">
+#           <span style="color:#6b7fa0">DETECTED: </span>
+#           <span style="color:#ff6680">{entry['threat_label']}</span>
+#           <span style="color:#3a4a60"> @ </span>
+#           <span style="color:#ff2244">{int(entry['threat_score']*100)}% confidence</span>
+#         </div>
+#         """, unsafe_allow_html=True)
+
 def render_result_card(entry, threshold=THREAT_THRESHOLD):
-    badge = (
-        '<span class="badge-threat">⚠ THREAT</span>'
-        if entry["is_threat"] else
-        '<span class="badge-safe">✔ SAFE</span>'
-    )
+    is_threat  = entry["is_threat"]
+    bg_color   = "#c62828" if is_threat else "#2e7d32"
+    text_color = "#ffffff"  if is_threat else "#e8f5e8"
+    badge_text = "⚠ THREAT" if is_threat else "✔ SAFE"
+    badge = (f'<span style="display:inline-block;background:{bg_color};color:{text_color};'
+             f'font-family:Share Tech Mono,monospace;font-size:13px;padding:4px 12px;'
+             f'border-radius:4px;letter-spacing:1px">{badge_text}</span>')
+
     saved_note = ""
     if entry.get("saved"):
         saved_note = (f'<div style="font-size:11px;color:#4fc3f7;margin-top:6px;'
@@ -525,47 +758,65 @@ def render_result_card(entry, threshold=THREAT_THRESHOLD):
                       f'{os.path.basename(entry["saved"])}</div>')
 
     cat_pill = ""
-    if entry.get("threat_category") and entry["is_threat"]:
+    if entry.get("threat_category") and is_threat:
         cat   = entry["threat_category"]
-        color = CATEGORY_COLORS.get(cat, "#78909c")
+        color = CATEGORY_COLORS.get(cat, "#94bdd1")
         cat_pill = (f'<span style="display:inline-block;background:#0a1020;'
                     f'border:1px solid {color};color:{color};'
                     f'font-family:Share Tech Mono,monospace;font-size:11px;'
                     f'padding:2px 10px;border-radius:20px;margin-left:8px;'
                     f'letter-spacing:1px">{cat.upper()}</span>')
 
-    dur_note = f' · {entry["duration"]}s' if entry.get("duration") else ""
-    card_class = "card-threat" if entry["is_threat"] else "card"
+    dur_note   = f' · {entry["duration"]}s' if entry.get("duration") else ""
+    card_class = "card-threat" if is_threat else "card"
 
-    st.markdown(f"""
-    <div class="{card_class}">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-        <div>
-          <span style="font-family:Share Tech Mono,monospace;font-size:12px;color:#3a4a60">
-            {entry['time']}{dur_note} · {entry['source']}
-          </span>
-          {cat_pill}
-        </div>
-        {badge}
-      </div>
-    """, unsafe_allow_html=True)
+    threat_block = ""
+    if is_threat and entry.get("threat_label"):
+        threat_block = (
+            f'<div style="background:#200810;border-left:3px solid #ff2244;'
+            f'padding:8px 12px;border-radius:4px;margin-bottom:12px;'
+            f'font-family:Share Tech Mono,monospace;font-size:12px">'
+            f'<span style="color:#6b7fa0">DETECTED: </span>'
+            f'<span style="color:#ff6680">{entry["threat_label"]}</span>'
+            f'<span style="color:#3a4a60"> @ </span>'
+            f'<span style="color:#ff2244">{int(entry["threat_score"]*100)}% confidence</span>'
+            f'</div>'
+        )
 
-    if entry["is_threat"] and entry.get("threat_label"):
-        st.markdown(f"""
-        <div style="background:#200810;border-left:3px solid #ff2244;
-                    padding:8px 12px;border-radius:4px;margin-bottom:12px;
-                    font-family:Share Tech Mono,monospace;font-size:12px">
-          <span style="color:#6b7fa0">DETECTED: </span>
-          <span style="color:#ff6680">{entry['threat_label']}</span>
-          <span style="color:#3a4a60"> @ </span>
-          <span style="color:#ff2244">{int(entry['threat_score']*100)}% confidence</span>
-        </div>
-        """, unsafe_allow_html=True)
+    bars_html = ""
+    for label, score in entry["predictions"]:
+        kw_hit = any(k in label.lower() for k in THREAT_KEYWORDS)
+        if kw_hit and score >= threshold:
+            clr = BAR_COLORS["threat"]
+        elif kw_hit:
+            clr = BAR_COLORS["warn"]
+        else:
+            clr = BAR_COLORS["safe"]
+        pct = int(score * 100)
+        bars_html += (
+            f'<div style="margin-bottom:8px">'
+            f'<div style="display:flex;justify-content:space-between;font-size:13px;'
+            f'font-family:Share Tech Mono,monospace;color:#1a2e1a;margin-bottom:3px">'
+            f'<span>{label}</span><span style="color:{clr}">{pct}%</span></div>'
+            f'<div class="bar-wrap">'
+            f'<div class="bar-fill" style="width:{pct}%;background:{clr}"></div>'
+            f'</div></div>'
+        )
 
-    render_predictions(entry["predictions"], entry["is_threat"], threshold)
-    if saved_note:
-        st.markdown(saved_note, unsafe_allow_html=True)
-    st.markdown("</div>", unsafe_allow_html=True)
+    st.markdown(
+        f'<div class="{card_class}">'
+        f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">'
+        f'<div><span style="font-family:Share Tech Mono,monospace;font-size:12px;color:#3a4a60">'
+        f'{entry["time"]}{dur_note} · {entry["source"]}</span>{cat_pill}</div>'
+        f'{badge}</div>'
+        f'{threat_block}{bars_html}{saved_note}'
+        f'</div>',
+        unsafe_allow_html=True
+    )
+
+    # render_predictions(entry["predictions"], entry["is_threat"], threshold)
+    # if saved_note:
+    #     st.markdown(saved_note, unsafe_allow_html=True)
 
 def render_active_threat_alert(entry):
     cat   = entry.get("threat_category", "unknown")
@@ -653,18 +904,40 @@ st.markdown("<br>", unsafe_allow_html=True)
 # ──────────────────────────────────────────────────────────────
 #  TABS
 # ──────────────────────────────────────────────────────────────
-tab_file, tab_mic, tab_log, tab_timeline, tab_clips = st.tabs([
-    "📂  File / Upload",
-    "🎙️  Microphone Monitor",
-    "📋  Detection Log",
-    "📈  Threat Timeline",
+# tab_file, tab_mic, tab_log, tab_timeline, tab_clips = st.tabs([
+#     "📂  File / Upload",
+#     "🎙️  Microphone Monitor",
+#     "📋  Detection Log",
+#     "📈  Threat Timeline",
+#     "🔊  Saved Clips",
+# ])
+TAB_OPTIONS = [
+    "📂 File / Upload",
+    "🎙️ Microphone Monitor",
+    "📋 Detection Log",
+    "📈 Threat Timeline",
     "🔊  Saved Clips",
-])
+    "🔧 Keyword Manager", 
+]
+
+_tab_index = TAB_OPTIONS.index(st.session_state.active_tab_name) \
+             if st.session_state.active_tab_name in TAB_OPTIONS else 0
+
+selected_tab = st.radio(
+    "Navigation",
+    TAB_OPTIONS,
+    index=_tab_index,                  
+    horizontal=True,
+    key="main_navigation",            
+    label_visibility="collapsed",      
+)
+
+st.session_state.active_tab_name = selected_tab
 
 # ══════════════════════════════════════════════════════════════
 #  TAB 1 – FILE MODE
 # ══════════════════════════════════════════════════════════════
-with tab_file:
+if selected_tab == "📂 File / Upload":
     if not st.session_state.model_loaded:
         st.warning("⚠️ Model is not loaded yet. Please wait or check the model path.")
     else:
@@ -814,7 +1087,7 @@ with tab_file:
 # ══════════════════════════════════════════════════════════════
 #  TAB 2 – MIC MODE
 # ══════════════════════════════════════════════════════════════
-with tab_mic:
+elif selected_tab == "🎙️ Microphone Monitor":
     if not st.session_state.model_loaded:
         st.warning("⚠️ Model is not loaded yet.")
     else:
@@ -941,7 +1214,7 @@ with tab_mic:
 # ══════════════════════════════════════════════════════════════
 #  TAB 3 – LOG
 # ══════════════════════════════════════════════════════════════
-with tab_log:
+elif selected_tab == "📋 Detection Log":
     log = st.session_state.results_log
     lhdr1, lhdr2, lhdr3, lhdr4 = st.columns([2, 1, 1, 1])
     with lhdr1:
@@ -992,7 +1265,7 @@ with tab_log:
 # ══════════════════════════════════════════════════════════════
 #  TAB 4 – THREAT TIMELINE
 # ══════════════════════════════════════════════════════════════
-with tab_timeline:
+elif selected_tab == "📈 Threat Timeline":
     th = st.session_state.threat_history
     st.markdown("#### Threat Timeline")
 
@@ -1020,32 +1293,36 @@ with tab_timeline:
         st.markdown("##### Recent Threats")
         for entry in th[:20]:
             cat   = entry.get("threat_category", "unknown") or "unknown"
-            color = CATEGORY_COLORS.get(cat, "#78909c")
+            color = CATEGORY_COLORS.get(cat, "#ff4d6d")
+            badge_text = "#ffffff" if cat == "vehicle" else "#020617"
             conf  = int(entry.get("threat_score", 0) * 100)
             saved = "💾" if entry.get("saved") else ""
             st.markdown(f"""
-            <div style="display:flex;align-items:center;gap:12px;
-                        border-left:3px solid {color};padding:8px 12px;
-                        margin-bottom:8px;background:#0a0e1a;border-radius:0 4px 4px 0">
+            <div style="display:flex;align-items:center;gap:14px;
+                        border:1px solid #334155;border-left:5px solid {color};
+                        padding:14px 18px;margin-bottom:12px;background:#0f172a;
+                        border-radius:12px;box-shadow:0 4px 14px rgba(2,6,23,0.45)">
               <span style="font-family:Share Tech Mono,monospace;font-size:11px;
-                           color:#3a4a60;min-width:70px">{entry.get('time','')}</span>
-              <span style="background:#0a1020;border:1px solid {color};color:{color};
-                           font-family:Share Tech Mono,monospace;font-size:10px;
-                           padding:2px 8px;border-radius:20px;min-width:80px;text-align:center">
+                           color:#e2e8f0;min-width:78px">{entry.get('time','')}</span>
+              <span style="background:{color};border:1px solid {color};color:{badge_text};
+                           font-family:Share Tech Mono,monospace;font-size:11px;
+                           font-weight:700;letter-spacing:1px;padding:5px 12px;
+                           border-radius:999px;min-width:98px;text-align:center">
                 {cat.upper()}</span>
               <span style="font-family:Rajdhani,sans-serif;font-size:14px;
-                           color:#c9d1e0;flex:1">{entry.get('threat_label','')}</span>
+                           font-weight:700;color:#ffffff;flex:1">{entry.get('threat_label','')}</span>
               <span style="font-family:Share Tech Mono,monospace;font-size:12px;
-                           color:{color}">{conf}%</span>
-              <span style="font-size:12px;color:#3a4a60">{entry.get('source','')}</span>
-              <span>{saved}</span>
+                           font-weight:700;color:{color};min-width:52px">{conf}%</span>
+              <span style="font-family:Rajdhani,sans-serif;font-size:13px;
+                           font-weight:600;color:#cbd5e1;min-width:92px">{entry.get('source','')}</span>
+              <span style="font-size:16px;min-width:20px;text-align:center">{saved}</span>
             </div>
             """, unsafe_allow_html=True)
 
 # ══════════════════════════════════════════════════════════════
 #  TAB 5 – SAVED CLIPS
 # ══════════════════════════════════════════════════════════════
-with tab_clips:
+elif selected_tab == "🔊  Saved Clips":
     st.markdown("#### 🔊 Saved Threat Clips")
     st.markdown(
         '<div style="font-family:Share Tech Mono,monospace;font-size:11px;color:#3a4a60;'
@@ -1177,21 +1454,21 @@ with tab_clips:
                 )
                 border_color = color
             else:
-                meta_html    = '<span style="color:#3a4a60;font-size:11px;font-family:Share Tech Mono,monospace">No session metadata</span>'
+                meta_html    = '<span style="color:#ffffff;font-size:11px;font-family:Share Tech Mono,monospace"></span>'
                 border_color = "#ff224455"
 
             st.markdown(f"""
             <div style="background:#120810;border:1px solid {border_color};border-radius:8px;
                         padding:14px 18px;margin-bottom:6px">
               <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px">
-                <span style="font-family:Share Tech Mono,monospace;font-size:11px;color:#3a4a60;
+                <span style="font-family:Share Tech Mono,monospace;font-size:11px;color:#ffffff;
                              min-width:140px">📅 {friendly}</span>
                 {meta_html}
                 <span style="font-family:Share Tech Mono,monospace;font-size:10px;
-                             color:#4fc3f7;margin-left:auto">⏱ {dur_str}</span>
+                             color:#ffffff;margin-left:auto">⏱ {dur_str}</span>
               </div>
               <div style="font-family:Share Tech Mono,monospace;font-size:10px;
-                          color:#2a3a54;margin-bottom:8px">📁 {fp}</div>
+                          color:#ffffff;margin-bottom:8px">📁 {fp}</div>
             </div>
             """, unsafe_allow_html=True)
 
@@ -1237,3 +1514,150 @@ with tab_clips:
             f'</div>',
             unsafe_allow_html=True,
         )
+        
+# ══════════════════════════════════════════════════════════════
+#  TAB 6 – KEYWORD MANAGER
+# ══════════════════════════════════════════════════════════════
+elif selected_tab == "🔧 Keyword Manager":
+
+    st.markdown(
+        '<div style="font-family:Share Tech Mono,monospace;font-size:11px;color:#3a4a60;'
+        'margin-bottom:18px">Manage threat detection keywords dynamically. '
+        'Changes are saved instantly and take effect on the next detection cycle.</div>',
+        unsafe_allow_html=True,
+    )
+
+    kw_data = st.session_state.kw_data
+
+    # ── Add New Category ─────────────────────────────────────
+    with st.expander("➕ Add New Category", expanded=False):
+        new_cat_name = st.text_input("Category name", placeholder="e.g. animal",
+                                     key="new_cat_input")
+        if st.button("Create Category", type="primary", key="create_cat_btn"):
+            name = new_cat_name.strip().lower()
+            if name and name not in kw_data:
+                kw_data[name] = []
+                save_threat_keywords_json(kw_data)
+                reload_keywords_into_session()
+                st.success(f"Category '{name}' created.")
+                st.rerun()
+            elif name in kw_data:
+                st.warning("Category already exists.")
+            else:
+                st.warning("Please enter a category name.")
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── Per-Category Editors ─────────────────────────────────
+    for cat in list(kw_data.keys()):
+        color = CATEGORY_COLORS.get(cat, "#78909c")
+        keywords = kw_data[cat]
+
+        st.markdown(
+            f'<div style="border-left:4px solid {color};padding-left:12px;margin-bottom:4px">'
+            f'<span style="font-family:Share Tech Mono,monospace;font-size:14px;'
+            f'font-weight:700;color:{color}">{cat.upper()}</span>'
+            f'<span style="font-family:Share Tech Mono,monospace;font-size:11px;'
+            f'color:#5a7a5a;margin-left:10px">{len(keywords)} keywords</span>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
+        # Keyword chips
+        chips_html = ""
+        for kw in keywords:
+            chips_html += (
+                f'<span style="display:inline-block;background:#f0f7f0;'
+                f'border:1px solid {color};color:#1a2e1a;'
+                f'font-family:Share Tech Mono,monospace;font-size:11px;'
+                f'padding:3px 10px;border-radius:20px;margin:3px 4px 3px 0">'
+                f'{kw}</span>'
+            )
+        if chips_html:
+            st.markdown(
+                f'<div style="margin-bottom:8px;line-height:2">{chips_html}</div>',
+                unsafe_allow_html=True,
+            )
+        else:
+            st.markdown(
+                '<div style="font-family:Share Tech Mono,monospace;font-size:11px;'
+                'color:#8aaa8a;margin-bottom:8px">No keywords yet.</div>',
+                unsafe_allow_html=True,
+            )
+
+        col_add, col_remove, col_del = st.columns([2, 2, 1])
+
+        with col_add:
+            new_kw = st.text_input(
+                "Add keyword",
+                placeholder="Type keyword…",
+                key=f"add_kw_{cat}",
+                label_visibility="collapsed",
+            )
+            # Suggestions
+            suggestions = get_keyword_suggestions(new_kw, st.session_state.kw_flat)
+            if suggestions:
+                st.markdown(
+                    '<span style="font-family:Share Tech Mono,monospace;'
+                    'font-size:10px;color:#5a7a5a">Suggestions:</span>',
+                    unsafe_allow_html=True,
+                )
+                sug_cols = st.columns(min(len(suggestions), 4))
+                for i, sug in enumerate(suggestions[:4]):
+                    with sug_cols[i]:
+                        if st.button(sug, key=f"sug_{cat}_{sug}_{i}"):
+                            if sug not in kw_data[cat]:
+                                kw_data[cat].append(sug)
+                                save_threat_keywords_json(kw_data)
+                                reload_keywords_into_session()
+                                st.rerun()
+
+            if st.button("➕ Add", key=f"add_btn_{cat}", type="primary"):
+                kw = new_kw.strip().lower()
+                if kw and kw not in kw_data[cat]:
+                    kw_data[cat].append(kw)
+                    save_threat_keywords_json(kw_data)
+                    reload_keywords_into_session()
+                    st.success(f"Added '{kw}' to {cat}.")
+                    st.rerun()
+                elif kw in kw_data[cat]:
+                    st.warning("Keyword already exists in this category.")
+
+        with col_remove:
+            if keywords:
+                kw_to_remove = st.selectbox(
+                    "Remove keyword",
+                    ["— select —"] + keywords,
+                    key=f"rm_sel_{cat}",
+                    label_visibility="collapsed",
+                )
+                if st.button("🗑 Remove", key=f"rm_btn_{cat}"):
+                    if kw_to_remove != "— select —":
+                        kw_data[cat].remove(kw_to_remove)
+                        save_threat_keywords_json(kw_data)
+                        reload_keywords_into_session()
+                        st.success(f"Removed '{kw_to_remove}' from {cat}.")
+                        st.rerun()
+
+        # with col_del:
+        #     st.markdown("<br>", unsafe_allow_html=True)
+        #     if st.button("🗑 Delete Category", key=f"del_cat_{cat}"):
+        #         del kw_data[cat]
+        #         save_threat_keywords_json(kw_data)
+        #         reload_keywords_into_session()
+        #         st.warning(f"Category '{cat}' deleted.")
+        #         st.rerun()
+
+        st.markdown(
+            f"<hr style='border-color:#c8e0c8;margin:12px 0'>",
+            unsafe_allow_html=True,
+        )
+
+    # ── Summary ──────────────────────────────────────────────
+    total_kw = sum(len(v) for v in kw_data.values())
+    st.markdown(
+        f'<div style="font-family:Share Tech Mono,monospace;font-size:12px;color:#5a7a5a;'
+        f'margin-top:8px">Total: {len(kw_data)} categories · {total_kw} keywords · '
+        f'Auto-saved to threat_keywords.json</div>',
+        unsafe_allow_html=True,
+    )
