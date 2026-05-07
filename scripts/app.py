@@ -358,7 +358,7 @@ p, li, .stMarkdown, label, .stSelectbox label {
 # ──────────────────────────────────────────────────────────────
 SAMPLE_RATE      = 32000
 TOP_K            = 5
-THREAT_THRESHOLD = 0.20
+THREAT_THRESHOLD = 0.08
 THREAT_SAVE_DIR  = "threat_clips"
 MODEL_PATH       = r"models/Cnn14_mAP=0.431.pth"
 DEVICE           = "cpu"
@@ -461,36 +461,76 @@ def get_threat_category(label: str) -> str:
 # Categories that should NEVER trigger an alert
 NON_THREAT_CATEGORIES = {"natural"}
 
+# def check_threat(predictions, threshold=None):
+#     if threshold is None:
+#         threshold = THREAT_THRESHOLD
+
+#     live_categories = st.session_state.get("kw_data", {})
+
+#     # Build a set of all keywords that belong to non-threat categories
+#     safe_keywords = set()
+#     for cat, keywords in live_categories.items():
+#         if cat in NON_THREAT_CATEGORIES:
+#             safe_keywords.update(keywords)
+
+#     # Build a set of all keywords that belong to alertable categories
+#     threat_keywords = set()
+#     for cat, keywords in live_categories.items():
+#         if cat not in NON_THREAT_CATEGORIES:
+#             threat_keywords.update(keywords)
+
+#     best_label, best_score, best_cat = None, 0.0, None
+#     for label, score in predictions:
+#         label_lower = label.lower()
+#         is_safe_hit   = any(k in label_lower for k in safe_keywords)
+#         is_threat_hit = any(k in label_lower for k in threat_keywords)
+#         if score >= threshold and is_threat_hit and not is_safe_hit:
+#             if score > best_score:
+#                 best_label = label
+#                 best_score = score
+#                 best_cat   = get_threat_category(label)
+
+#     is_threat = best_label is not None
+#     return is_threat, best_label, best_score, best_cat
 def check_threat(predictions, threshold=None):
     if threshold is None:
         threshold = THREAT_THRESHOLD
 
     live_categories = st.session_state.get("kw_data", {})
 
-    # Build a set of all keywords that belong to non-threat categories
     safe_keywords = set()
-    for cat, keywords in live_categories.items():
-        if cat in NON_THREAT_CATEGORIES:
-            safe_keywords.update(keywords)
-
-    # Build a set of all keywords that belong to alertable categories
     threat_keywords = set()
-    for cat, keywords in live_categories.items():
-        if cat not in NON_THREAT_CATEGORIES:
-            threat_keywords.update(keywords)
 
-    best_label, best_score, best_cat = None, 0.0, None
+    for cat, keywords in live_categories.items():
+
+        if cat in NON_THREAT_CATEGORIES:
+            safe_keywords.update([k.lower() for k in keywords])
+
+        else:
+            threat_keywords.update([k.lower() for k in keywords])
+
+    best_label = None
+    best_score = 0.0
+    best_cat   = None
+
     for label, score in predictions:
+
         label_lower = label.lower()
-        is_safe_hit   = any(k in label_lower for k in safe_keywords)
+
+        is_safe_hit = any(k in label_lower for k in safe_keywords)
         is_threat_hit = any(k in label_lower for k in threat_keywords)
-        if score >= threshold and is_threat_hit and not is_safe_hit:
+
+        # MAIN FIX
+        if is_threat_hit and not is_safe_hit:
+
             if score > best_score:
                 best_label = label
                 best_score = score
-                best_cat   = get_threat_category(label)
+                best_cat = get_threat_category(label)
 
-    is_threat = best_label is not None
+    # Final decision
+    is_threat = best_score >= threshold
+
     return is_threat, best_label, best_score, best_cat
 
 def normalize_waveform(waveform: np.ndarray) -> np.ndarray:
@@ -591,13 +631,62 @@ THREAT_CATEGORIES = st.session_state.kw_data
 # ──────────────────────────────────────────────────────────────
 #  MIC MONITOR THREAD
 # ──────────────────────────────────────────────────────────────
+# def mic_worker(model, interval, stop_event, audio_buf, buf_lock,
+#                results_queue, save_dir, threshold):
+#     import streamlit.runtime.scriptrunner as sr
+#     sr.add_script_run_ctx()
+#     os.makedirs(save_dir, exist_ok=True)
+
+#     def audio_cb(indata, frames, t, status):
+#         with buf_lock:
+#             audio_buf.append(indata[:, 0].copy())
+
+#     with sd.InputStream(samplerate=SAMPLE_RATE, channels=1,
+#                         dtype="float32", callback=audio_cb):
+#         while not stop_event.is_set():
+#             time.sleep(interval)
+#             with buf_lock:
+#                 if not audio_buf:
+#                     continue
+#                 raw_chunk = np.concatenate(audio_buf)
+#                 audio_buf.clear()
+
+#             waveform = normalize_waveform(raw_chunk.copy())
+#             duration = len(raw_chunk) / SAMPLE_RATE
+#             preds    = predict_waveform(model, waveform)
+#             is_thr, tlabel, tscore, tcat = check_threat(preds, threshold)
+
+#             saved_path = None
+#             if is_thr:
+#                 ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:19]
+#                 saved_path = os.path.join(save_dir, f"threat_{ts}.wav")
+#                 sf.write(saved_path, raw_chunk, SAMPLE_RATE)
+
+#             results_queue.put(dict(
+#                 time=datetime.now().strftime("%H:%M:%S"),
+#                 timestamp=datetime.now(),
+#                 predictions=preds,
+#                 is_threat=is_thr,
+#                 threat_label=tlabel,
+#                 threat_score=tscore,
+#                 threat_category=tcat,
+#                 saved=saved_path,
+#                 source="microphone",
+#                 duration=round(duration, 2),
+#                 interval=interval,
+#             ))
+
 def mic_worker(model, interval, stop_event, audio_buf, buf_lock,
-               results_queue, save_dir, threshold):
+               results_queue, save_dir, threshold, kw_data):
     os.makedirs(save_dir, exist_ok=True)
 
     def audio_cb(indata, frames, t, status):
         with buf_lock:
             audio_buf.append(indata[:, 0].copy())
+
+    # Build keyword sets once from passed-in kw_data (not session_state)
+    safe_kws = {k.lower() for cat, kws in kw_data.items() if cat in {"natural"} for k in kws}
+    threat_kws = {k.lower() for cat, kws in kw_data.items() if cat not in {"natural"} for k in kws}
 
     with sd.InputStream(samplerate=SAMPLE_RATE, channels=1,
                         dtype="float32", callback=audio_cb):
@@ -612,7 +701,22 @@ def mic_worker(model, interval, stop_event, audio_buf, buf_lock,
             waveform = normalize_waveform(raw_chunk.copy())
             duration = len(raw_chunk) / SAMPLE_RATE
             preds    = predict_waveform(model, waveform)
-            is_thr, tlabel, tscore, tcat = check_threat(preds, threshold)
+
+            # Threat check using passed-in kw_data (thread-safe, no session_state)
+            best_label, best_score, best_cat = None, 0.0, None
+            for label, score in preds:
+                ll = label.lower()
+                if any(k in ll for k in threat_kws) and not any(k in ll for k in safe_kws):
+                    if score > best_score:
+                        best_label, best_score = label, score
+                        best_cat = next(
+                            (c for c, ks in kw_data.items() if any(k in ll for k in ks)),
+                            "unknown"
+                        )
+            is_thr  = best_score >= threshold
+            tlabel  = best_label
+            tscore  = best_score
+            tcat    = best_cat
 
             saved_path = None
             if is_thr:
@@ -639,7 +743,7 @@ def mic_worker(model, interval, stop_event, audio_buf, buf_lock,
 # ──────────────────────────────────────────────────────────────
 def render_predictions(preds, is_thr, threshold=THREAT_THRESHOLD):
     for label, score in preds:
-        kw_hit = any(k in label.lower() for k in THREAT_KEYWORDS)
+        kw_hit = any(k in label.lower() for k in st.session_state.get("kw_flat", []))
         if kw_hit and score >= threshold:
             clr = BAR_COLORS["threat"]
         elif kw_hit:
@@ -771,7 +875,7 @@ def render_result_card(entry, threshold=THREAT_THRESHOLD):
 
     bars_html = ""
     for label, score in entry["predictions"]:
-        kw_hit = any(k in label.lower() for k in THREAT_KEYWORDS)
+        kw_hit = any(k in label.lower() for k in st.session_state.get("kw_flat", []))
         if kw_hit and score >= threshold:
             clr = BAR_COLORS["threat"]
         elif kw_hit:
@@ -1151,6 +1255,7 @@ elif selected_tab == "🎙️ Microphone Monitor":
                     st.session_state.audio_buf,
                     st.session_state.buf_lock,
                     rq, THREAT_SAVE_DIR, THREAT_THRESHOLD,
+                    dict(st.session_state.kw_data),  # ← snapshot passed in
                 ),
                 daemon=True,
             )

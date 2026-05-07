@@ -1,0 +1,9 @@
+{
+  "time": "00:22:35",
+  "threat_label": "Vehicle",
+  "threat_score": 0.32490313053131104,
+  "threat_category": "threat",
+  "latitude": 30.3165,
+  "longitude": 78.0322,
+  "source": "microphone"
+}

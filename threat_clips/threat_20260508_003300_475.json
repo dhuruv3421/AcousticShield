@@ -1,0 +1,9 @@
+{
+  "time": "00:33:00",
+  "threat_label": "Speech",
+  "threat_score": 0.6983640789985657,
+  "threat_category": "threat",
+  "latitude": 30.3165,
+  "longitude": 78.0322,
+  "source": "microphone"
+}

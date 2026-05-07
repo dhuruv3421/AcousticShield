@@ -16,6 +16,18 @@ import json
 import difflib
 from audioset_suggestions import AUDIOSET_SUGGESTION_DICT
 import gdown
+
+# ── MAP SYSTEM ── NEW IMPORTS ────────────────────────────────
+import folium
+from folium.plugins import MarkerCluster
+from streamlit_folium import st_folium
+try:
+    from streamlit_js_eval import streamlit_js_eval
+    JS_EVAL_AVAILABLE = True
+except ImportError:
+    JS_EVAL_AVAILABLE = False
+# ── END MAP SYSTEM IMPORTS ───────────────────────────────────
+
 # ──────────────────────────────────────────────────────────────
 #  PAGE CONFIG
 # ──────────────────────────────────────────────────────────────
@@ -168,21 +180,14 @@ h1, h2, h3 {
 }
 .top-bar .sub {
     font-family: 'Share Tech Mono', monospace;
-
     font-size: 1.3rem;
-
     font-weight: 700;
-
     color: #ffffff;
-
     letter-spacing: 6px;
-
     text-transform: uppercase;
-
     text-shadow:
         0 0 8px rgba(255,255,255,0.25),
         0 0 18px rgba(120,255,180,0.15);
-
     margin-top: 8px;
 }
 .top-bar-logo {
@@ -360,39 +365,36 @@ SAMPLE_RATE      = 32000
 TOP_K            = 5
 THREAT_THRESHOLD = 0.20
 THREAT_SAVE_DIR  = "threat_clips"
-import gdown
 
 MODEL_PATH = "models/Cnn14_mAP=0.431.pth"
+MODEL_URL  = "https://drive.google.com/uc?id=16sTZkg810HRtw66yAZxb6JyXFgR1M0hK"
 
-# Google Drive direct download URL
-MODEL_URL = "https://drive.google.com/uc?id=16sTZkg810HRtw66yAZxb6JyXFgR1M0hK"
-
-# Create models folder if missing
 os.makedirs("models", exist_ok=True)
-
-# Download model automatically if not present
 if not os.path.exists(MODEL_PATH):
     with st.spinner("Downloading AI model... Please wait."):
         gdown.download(MODEL_URL, MODEL_PATH, quiet=False)
-DEVICE           = "cpu"
+
+DEVICE    = "cpu"
 LOGO_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "acoustic_shield_logo.png")
 
-# ── Dynamic keyword loading ──────────────────────────────────
-# Hardcoded lists are now loaded from JSON at startup.
-# These will be overwritten from session_state during runtime.
-THREAT_KEYWORDS  = []   # populated from JSON via session_state
-THREAT_CATEGORIES = {}  # populated from JSON via session_state
+# ── MAP SYSTEM ── FALLBACK GPS COORDINATES (Dehradun, Uttarakhand) ───
+MAP_FALLBACK_LAT = 30.3165
+MAP_FALLBACK_LON = 78.0322
+# ── END MAP SYSTEM ───────────────────────────────────────────
+
+THREAT_KEYWORDS   = []
+THREAT_CATEGORIES = {}
 
 CATEGORY_COLORS = {
-    "weapon":"#ff2244",
-    "tool":"#ffa726",
-    "vehicle":"#ab47bc",
-    "impact":"#ef5350",
-    "emergency":"#ff7043",
+    "weapon":        "#ff2244",
+    "tool":          "#ffa726",
+    "vehicle":       "#ab47bc",
+    "impact":        "#ef5350",
+    "emergency":     "#ff7043",
     "environmental": "#29b6f6",
-    "industrial":"#66bb6a",
-    "threat":  "#ff2244",
-    "natural": "#29f63a",
+    "industrial":    "#66bb6a",
+    "threat":        "#ff2244",
+    "natural":       "#29f63a",
     "unknown":       "#78909c",
 }
 
@@ -401,6 +403,22 @@ BAR_COLORS = {
     "warn":   "#ffa726",
     "safe":   "#71f74f",
 }
+
+# ── MAP SYSTEM ── FOLIUM MARKER COLORS PER CATEGORY ──────────
+# Maps threat category → folium color name
+FOLIUM_MARKER_COLORS = {
+    "weapon":        "red",
+    "tool":          "orange",
+    "vehicle":       "purple",
+    "impact":        "darkred",
+    "emergency":     "darkred",
+    "environmental": "green",
+    "industrial":    "blue",
+    "threat":        "red",
+    "natural":       "lightgreen",
+    "unknown":       "gray",
+}
+# ── END MAP SYSTEM ───────────────────────────────────────────
 
 # ──────────────────────────────────────────────────────────────
 #  SESSION STATE INIT
@@ -428,13 +446,18 @@ def init_state():
         active_tab_name="📂 File / Upload",
         kw_data={},
         kw_flat=[],
+        # ── MAP SYSTEM ── new session state keys ──────────────
+        current_lat=MAP_FALLBACK_LAT,   # live GPS lat (updated via JS or fallback)
+        current_lon=MAP_FALLBACK_LON,   # live GPS lon
+        geo_source="fallback",          # "browser" | "fallback"
+        map_threat_count=0,             # tracks how many threats are on the map (for cache invalidation)
+        # ── END MAP SYSTEM ───────────────────────────────────
     )
     for k, v in defaults.items():
         if k not in st.session_state:
             st.session_state[k] = v
 
 init_state()
-
 
 # ──────────────────────────────────────────────────────────────
 #  AUTO MODEL LOADING
@@ -471,8 +494,44 @@ def get_threat_category(label: str) -> str:
             return cat
     return "unknown"
 
-# Categories that should NEVER trigger an alert
 NON_THREAT_CATEGORIES = {"natural"}
+
+# def check_threat(predictions, threshold=None):
+#     if threshold is None:
+#         threshold = THREAT_THRESHOLD
+
+#     live_categories = st.session_state.get("kw_data", {})
+
+#     safe_keywords = set()
+#     for cat, keywords in live_categories.items():
+#         if cat in NON_THREAT_CATEGORIES:
+#             safe_keywords.update(keywords)
+
+#     threat_keywords = set()
+#     for cat, keywords in live_categories.items():
+#         if cat not in NON_THREAT_CATEGORIES:
+#             threat_keywords.update(keywords)
+
+#     best_label, best_score, best_cat = None, 0.0, None
+#     for label, score in predictions:
+#         label_lower   = label.lower()
+#         is_safe_hit   = any(k in label_lower for k in safe_keywords)
+#         is_threat_hit = any(k in label_lower for k in threat_keywords)
+#         if score >= threshold and is_threat_hit and not is_safe_hit:
+#             if score > best_score:
+#                 best_label = label
+#                 best_score = score
+#                 best_cat   = get_threat_category(label)
+
+#     is_threat = best_label is not None
+#     return is_threat, best_label, best_score, best_cat
+
+# def normalize_waveform(waveform: np.ndarray) -> np.ndarray:
+#     waveform = waveform.astype(np.float32)
+#     peak = np.abs(waveform).max()
+#     if peak > 0:
+#         waveform /= (peak + 1e-9)
+#     return waveform
 
 def check_threat(predictions, threshold=None):
     if threshold is None:
@@ -480,38 +539,22 @@ def check_threat(predictions, threshold=None):
 
     live_categories = st.session_state.get("kw_data", {})
 
-    # Build a set of all keywords that belong to non-threat categories
-    safe_keywords = set()
-    for cat, keywords in live_categories.items():
-        if cat in NON_THREAT_CATEGORIES:
-            safe_keywords.update(keywords)
-
-    # Build a set of all keywords that belong to alertable categories
-    threat_keywords = set()
-    for cat, keywords in live_categories.items():
-        if cat not in NON_THREAT_CATEGORIES:
-            threat_keywords.update(keywords)
+    safe_kws   = {k.lower() for cat, kws in live_categories.items() if cat in NON_THREAT_CATEGORIES for k in kws}
+    threat_kws = {k.lower() for cat, kws in live_categories.items() if cat not in NON_THREAT_CATEGORIES for k in kws}
 
     best_label, best_score, best_cat = None, 0.0, None
     for label, score in predictions:
-        label_lower = label.lower()
-        is_safe_hit   = any(k in label_lower for k in safe_keywords)
-        is_threat_hit = any(k in label_lower for k in threat_keywords)
-        if score >= threshold and is_threat_hit and not is_safe_hit:
+        ll = label.lower()
+        if any(k in ll for k in threat_kws) and not any(k in ll for k in safe_kws):
             if score > best_score:
-                best_label = label
-                best_score = score
-                best_cat   = get_threat_category(label)
+                best_label, best_score = label, score
+                best_cat = next(
+                    (c for c, ks in live_categories.items() if any(k in ll for k in ks)),
+                    "unknown"
+                )
 
-    is_threat = best_label is not None
+    is_threat = best_score >= threshold
     return is_threat, best_label, best_score, best_cat
-
-def normalize_waveform(waveform: np.ndarray) -> np.ndarray:
-    waveform = waveform.astype(np.float32)
-    peak = np.abs(waveform).max()
-    if peak > 0:
-        waveform /= (peak + 1e-9)
-    return waveform
 
 # ──────────────────────────────────────────────────────────────
 #  KEYWORD JSON HELPERS
@@ -519,98 +562,241 @@ def normalize_waveform(waveform: np.ndarray) -> np.ndarray:
 KEYWORDS_JSON_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "threat_keywords.json")
 
 def load_threat_keywords_json() -> dict:
-    """Load keyword categories from JSON file."""
     if os.path.exists(KEYWORDS_JSON_PATH):
         with open(KEYWORDS_JSON_PATH, "r") as f:
             return json.load(f)
     return {}
 
 def save_threat_keywords_json(data: dict):
-    """Save keyword categories to JSON file."""
     with open(KEYWORDS_JSON_PATH, "w") as f:
         json.dump(data, f, indent=2)
 
 def get_flat_keywords(data: dict) -> list:
-    """Flatten all keywords from all categories into one list."""
     flat = []
     for keywords in data.values():
         flat.extend(keywords)
     return list(set(flat))
 
 def reload_keywords_into_session():
-    """Reload JSON into session state and rebuild flat keyword list."""
-    st.session_state.kw_data    = load_threat_keywords_json()
-    st.session_state.kw_flat    = get_flat_keywords(st.session_state.kw_data)
+    st.session_state.kw_data = load_threat_keywords_json()
+    st.session_state.kw_flat = get_flat_keywords(st.session_state.kw_data)
 
 # ──────────────────────────────────────────────────────────────
 #  SUGGESTION DICTIONARY
 # ──────────────────────────────────────────────────────────────
 def get_keyword_suggestions(query: str, existing_keywords: list) -> list:
-    """Return smart AudioSet-based suggestions while typing."""
     if not query or len(query) < 2:
         return []
     query_lower = query.lower().strip()
     suggestions = set()
 
-    # 1. Direct key match in suggestion dict
     for key, values in AUDIOSET_SUGGESTION_DICT.items():
         if query_lower in key or key in query_lower:
             suggestions.update(values)
 
-    # 2. Partial key match (any word in query matches any word in key)
     query_words = set(query_lower.split())
     for key, values in AUDIOSET_SUGGESTION_DICT.items():
         key_words = set(key.split())
-        if query_words & key_words:  # intersection
+        if query_words & key_words:
             suggestions.update(values)
 
-    # 3. Value-level substring match in suggestion dict
     for key, values in AUDIOSET_SUGGESTION_DICT.items():
         for val in values:
             if query_lower in val.lower() or val.lower().startswith(query_lower):
                 suggestions.update(values)
                 break
 
-    # 4. Fuzzy match against all suggestion dict values
     all_dict_values = [v for vals in AUDIOSET_SUGGESTION_DICT.values() for v in vals]
     close = difflib.get_close_matches(query_lower, all_dict_values, n=6, cutoff=0.5)
     suggestions.update(close)
 
-    # 5. Fuzzy match against existing keywords in JSON
     close2 = difflib.get_close_matches(query_lower, existing_keywords, n=4, cutoff=0.4)
     suggestions.update(close2)
 
-    # 6. Substring match against existing keywords
     for kw in existing_keywords:
         if query_lower in kw.lower():
             suggestions.add(kw)
 
-    # Remove already-existing keywords to avoid duplicates
     suggestions = [s for s in suggestions if s not in existing_keywords]
-
-    # Sort: prioritize suggestions that start with the query
     starts_with = [s for s in suggestions if s.lower().startswith(query_lower)]
     others      = [s for s in suggestions if not s.lower().startswith(query_lower)]
     return (starts_with + others)[:8]
 
-# ── Load keywords from JSON on startup ───────────────────────
 if not st.session_state.kw_data:
     reload_keywords_into_session()
 
-# Keep module-level variables in sync so check_threat() works
-THREAT_KEYWORDS  = st.session_state.kw_flat
+THREAT_KEYWORDS   = st.session_state.kw_flat
 THREAT_CATEGORIES = st.session_state.kw_data
+
+
+# ══════════════════════════════════════════════════════════════
+#  ── MAP SYSTEM ── GEOLOCATION & MAP HELPER FUNCTIONS
+# ══════════════════════════════════════════════════════════════
+
+def get_current_location() -> tuple[float, float]:
+    """
+    Attempt to get the current GPS coordinates.
+    FIRST PRIORITY: Browser geolocation via streamlit-js-eval.
+    FALLBACK: Return static demo coordinates (Dehradun, Uttarakhand).
+    Returns (latitude, longitude).
+    Never blocks or raises — safe to call during threat detection.
+    """
+    # Try browser geolocation if streamlit-js-eval is installed
+    if JS_EVAL_AVAILABLE:
+        try:
+            coords = streamlit_js_eval(
+                js_expressions="navigator.geolocation ? "
+                               "new Promise(r => navigator.geolocation.getCurrentPosition("
+                               "p => r({lat: p.coords.latitude, lon: p.coords.longitude}),"
+                               "e => r(null), {timeout:3000})) : null",
+                key="geo_fetch",
+            )
+            if coords and isinstance(coords, dict):
+                lat = float(coords.get("lat", MAP_FALLBACK_LAT))
+                lon = float(coords.get("lon", MAP_FALLBACK_LON))
+                st.session_state.current_lat = lat
+                st.session_state.current_lon = lon
+                st.session_state.geo_source  = "browser"
+                return lat, lon
+        except Exception:
+            pass  # silently fall through to fallback
+
+    # Use cached coordinates (may have been set by a previous browser call)
+    lat = st.session_state.get("current_lat", MAP_FALLBACK_LAT)
+    lon = st.session_state.get("current_lon", MAP_FALLBACK_LON)
+    st.session_state.geo_source = "fallback"
+    return lat, lon
+
+
+def save_threat_metadata(saved_wav_path: str, entry: dict):
+    """
+    Save a companion JSON metadata file alongside the saved WAV clip.
+    e.g. threat_20260507_220101.wav → threat_20260507_220101.json
+    Metadata includes coordinates, label, score, category, time, source.
+    """
+    if not saved_wav_path:
+        return
+    try:
+        json_path = os.path.splitext(saved_wav_path)[0] + ".json"
+        meta = {
+            "time":             entry.get("time", ""),
+            "threat_label":     entry.get("threat_label", ""),
+            "threat_score":     entry.get("threat_score", 0.0),
+            "threat_category":  entry.get("threat_category", "unknown"),
+            "latitude":         entry.get("latitude", MAP_FALLBACK_LAT),
+            "longitude":        entry.get("longitude", MAP_FALLBACK_LON),
+            "source":           entry.get("source", "microphone"),
+        }
+        with open(json_path, "w") as f:
+            json.dump(meta, f, indent=2)
+    except Exception:
+        pass  # metadata saving must never block detection
+
+
+def create_threat_map(threat_history: list, center_lat: float, center_lon: float) -> folium.Map:
+    """
+    Build a folium Map from the threat_history list.
+    - Centers on the latest threat if available.
+    - Colored markers based on threat category.
+    - MarkerCluster for performance with many points.
+    - Rich popup with all threat details.
+    Returns a folium.Map object ready for st_folium().
+    """
+    # Determine map center: latest threat with coordinates, else supplied center
+    geo_threats = [e for e in threat_history if e.get("latitude") and e.get("longitude")]
+
+    if geo_threats:
+        latest = geo_threats[0]
+        map_center = [latest["latitude"], latest["longitude"]]
+        zoom = 13
+    else:
+        map_center = [center_lat, center_lon]
+        zoom = 10
+
+    # Create the base map with a clean tile layer
+    m = folium.Map(
+        location=map_center,
+        zoom_start=zoom,
+        tiles="CartoDB positron",
+        control_scale=True,
+    )
+
+    # Add a satellite/topo tile option via layer control
+    folium.TileLayer(
+        "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+        attr="Esri",
+        name="Satellite",
+    ).add_to(m)
+    folium.TileLayer("OpenStreetMap", name="Street Map").add_to(m)
+    folium.LayerControl().add_to(m)
+
+    # MarkerCluster for performance
+    cluster = MarkerCluster(name="Threat Clusters").add_to(m)
+
+    # Plot each geo-tagged threat
+    for entry in geo_threats:
+        lat  = entry["latitude"]
+        lon  = entry["longitude"]
+        cat  = entry.get("threat_category", "unknown") or "unknown"
+        conf = int(entry.get("threat_score", 0) * 100)
+        label    = entry.get("threat_label", "Unknown")
+        t_time   = entry.get("time", "")
+        source   = entry.get("source", "")
+        saved    = "✅ Yes" if entry.get("saved") else "❌ No"
+        maps_url = f"https://www.google.com/maps?q={lat},{lon}"
+
+        # Build rich HTML popup
+        popup_html = f"""
+        <div style="font-family:Arial,sans-serif;min-width:220px;font-size:13px">
+          <div style="background:#c62828;color:#fff;padding:6px 10px;
+                      border-radius:4px 4px 0 0;font-weight:bold;letter-spacing:1px">
+            ⚠ THREAT DETECTED
+          </div>
+          <div style="padding:10px;border:1px solid #e0e0e0;border-top:none;
+                      border-radius:0 0 4px 4px;background:#fff">
+            <b>Sound:</b> {label}<br>
+            <b>Confidence:</b> {conf}%<br>
+            <b>Category:</b> {cat.upper()}<br>
+            <b>Time:</b> {t_time}<br>
+            <b>Source:</b> {source}<br>
+            <b>Coordinates:</b> {lat:.5f}, {lon:.5f}<br>
+            <b>Clip Saved:</b> {saved}<br>
+            <a href="{maps_url}" target="_blank"
+               style="color:#1a73e8;text-decoration:none">
+              🗺 Open in Google Maps
+            </a>
+          </div>
+        </div>
+        """
+
+        folium_color = FOLIUM_MARKER_COLORS.get(cat, "gray")
+
+        folium.Marker(
+            location=[lat, lon],
+            popup=folium.Popup(popup_html, max_width=280),
+            tooltip=f"⚠ {label} ({conf}%)",
+            icon=folium.Icon(color=folium_color, icon="exclamation-sign", prefix="glyphicon"),
+        ).add_to(cluster)
+
+    return m
+
+# ── END MAP SYSTEM HELPERS ────────────────────────────────────
+
 
 # ──────────────────────────────────────────────────────────────
 #  MIC MONITOR THREAD
 # ──────────────────────────────────────────────────────────────
 def mic_worker(model, interval, stop_event, audio_buf, buf_lock,
-               results_queue, save_dir, threshold):
+               results_queue, save_dir, threshold, kw_data, lat, lon):
     os.makedirs(save_dir, exist_ok=True)
 
     def audio_cb(indata, frames, t, status):
         with buf_lock:
             audio_buf.append(indata[:, 0].copy())
+
+    # Build keyword sets once from passed-in kw_data (not session_state)
+    safe_kws = {k.lower() for cat, kws in kw_data.items() if cat in {"natural"} for k in kws}
+    threat_kws = {k.lower() for cat, kws in kw_data.items() if cat not in {"natural"} for k in kws}
 
     with sd.InputStream(samplerate=SAMPLE_RATE, channels=1,
                         dtype="float32", callback=audio_cb):
@@ -625,13 +811,38 @@ def mic_worker(model, interval, stop_event, audio_buf, buf_lock,
             waveform = normalize_waveform(raw_chunk.copy())
             duration = len(raw_chunk) / SAMPLE_RATE
             preds    = predict_waveform(model, waveform)
-            is_thr, tlabel, tscore, tcat = check_threat(preds, threshold)
+
+            # Threat check using passed-in kw_data (thread-safe, no session_state)
+            best_label, best_score, best_cat = None, 0.0, None
+            for label, score in preds:
+                ll = label.lower()
+                if any(k in ll for k in threat_kws) and not any(k in ll for k in safe_kws):
+                    if score > best_score:
+                        best_label, best_score = label, score
+                        best_cat = next(
+                            (c for c, ks in kw_data.items() if any(k in ll for k in ks)),
+                            "unknown"
+                        )
+            is_thr  = best_score >= threshold
+            tlabel  = best_label
+            tscore  = best_score
+            tcat    = best_cat
 
             saved_path = None
             if is_thr:
                 ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:19]
                 saved_path = os.path.join(save_dir, f"threat_{ts}.wav")
                 sf.write(saved_path, raw_chunk, SAMPLE_RATE)
+                
+                save_threat_metadata(saved_path, {
+                    "time": datetime.now().strftime("%H:%M:%S"),
+                    "threat_label": tlabel,
+                    "threat_score": tscore,
+                    "threat_category": tcat,
+                    "latitude": lat,
+                    "longitude": lon,
+                    "source": "microphone",
+                })
 
             results_queue.put(dict(
                 time=datetime.now().strftime("%H:%M:%S"),
@@ -645,14 +856,17 @@ def mic_worker(model, interval, stop_event, audio_buf, buf_lock,
                 source="microphone",
                 duration=round(duration, 2),
                 interval=interval,
+                latitude=lat,
+                longitude=lon,
             ))
+
 
 # ──────────────────────────────────────────────────────────────
 #  RENDER HELPERS
 # ──────────────────────────────────────────────────────────────
 def render_predictions(preds, is_thr, threshold=THREAT_THRESHOLD):
     for label, score in preds:
-        kw_hit = any(k in label.lower() for k in THREAT_KEYWORDS)
+        kw_hit = any(k in label.lower() for k in st.session_state.get("kw_flat", []))
         if kw_hit and score >= threshold:
             clr = BAR_COLORS["threat"]
         elif kw_hit:
@@ -675,71 +889,6 @@ def render_predictions(preds, is_thr, threshold=THREAT_THRESHOLD):
         </div>
         """, unsafe_allow_html=True)
 
-# def render_result_card(entry, threshold=THREAT_THRESHOLD):
-#     # badge = (
-#     #     '<span style="display:inline-block;background:#c62828;color:#ffffff;'
-#     #     'font-family:Share Tech Mono,monospace;font-size:13px;padding:4px 12px;'
-#     #     'border-radius:4px;letter-spacing:1px">⚠ THREAT</span>'
-#     #     if entry["is_threat"] else
-#     #     '<span style="display:inline-block;background:#2e7d32;color:#e8f5e8;'
-#     #     'font-family:Share Tech Mono,monospace;font-size:13px;padding:4px 12px;'
-#     #     'border-radius:4px;letter-spacing:1px">✔ SAFE</span>'
-#     # )
-    
-#     is_threat = entry["is_threat"]
-#     bg_color   = "#c62828" if is_threat else "#2e7d32"
-#     text_color = "#ffffff"  if is_threat else "#e8f5e8"
-#     badge_text = "⚠ THREAT" if is_threat else "✔ SAFE"
-    
-#     badge = (
-#         f'<span style="display:inline-block;background:{bg_color};color:{text_color};'
-#         f'font-family:Share Tech Mono,monospace;font-size:13px;padding:4px 12px;'
-#         f'border-radius:4px;letter-spacing:1px">{badge_text}</span>'
-#     )
-#     saved_note = ""
-#     if entry.get("saved"):
-#         saved_note = (f'<div style="font-size:11px;color:#4fc3f7;margin-top:6px;'
-#                       f'font-family:Share Tech Mono,monospace">💾 Saved: '
-#                       f'{os.path.basename(entry["saved"])}</div>')
-
-#     cat_pill = ""
-#     if entry.get("threat_category") and entry["is_threat"]:
-#         cat   = entry["threat_category"]
-#         color = CATEGORY_COLORS.get(cat, "#78909c")
-#         cat_pill = (f'<span style="display:inline-block;background:#0a1020;'
-#                     f'border:1px solid {color};color:{color};'
-#                     f'font-family:Share Tech Mono,monospace;font-size:11px;'
-#                     f'padding:2px 10px;border-radius:20px;margin-left:8px;'
-#                     f'letter-spacing:1px">{cat.upper()}</span>')
-
-#     dur_note = f' · {entry["duration"]}s' if entry.get("duration") else ""
-#     card_class = "card-threat" if entry["is_threat"] else "card"
-
-#     st.markdown(f"""
-#     <div class="{card_class}">
-#       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-#         <div>
-#           <span style="font-family:Share Tech Mono,monospace;font-size:12px;color:#3a4a60">
-#             {entry['time']}{dur_note} · {entry['source']}
-#           </span>
-#           {cat_pill}
-#         </div>
-#         {badge}
-#       </div>
-#     </div>
-#     """, unsafe_allow_html=True)
-
-#     if entry["is_threat"] and entry.get("threat_label"):
-#         st.markdown(f"""
-#         <div style="background:#200810;border-left:3px solid #ff2244;
-#                     padding:8px 12px;border-radius:4px;margin-bottom:12px;
-#                     font-family:Share Tech Mono,monospace;font-size:12px">
-#           <span style="color:#6b7fa0">DETECTED: </span>
-#           <span style="color:#ff6680">{entry['threat_label']}</span>
-#           <span style="color:#3a4a60"> @ </span>
-#           <span style="color:#ff2244">{int(entry['threat_score']*100)}% confidence</span>
-#         </div>
-#         """, unsafe_allow_html=True)
 
 def render_result_card(entry, threshold=THREAT_THRESHOLD):
     is_threat  = entry["is_threat"]
@@ -782,9 +931,25 @@ def render_result_card(entry, threshold=THREAT_THRESHOLD):
             f'</div>'
         )
 
+    # ── MAP SYSTEM ── location pill for detection log cards ──
+    loc_note = ""
+    lat = entry.get("latitude")
+    lon = entry.get("longitude")
+    if lat and lon:
+        maps_url = f"https://www.google.com/maps?q={lat},{lon}"
+        loc_note = (
+            f'<div style="font-size:11px;color:#5a7a9a;margin-top:4px;'
+            f'font-family:Share Tech Mono,monospace">'
+            f'📍 {lat:.5f}, {lon:.5f} &nbsp;'
+            f'<a href="{maps_url}" target="_blank" '
+            f'style="color:#4fc3f7;text-decoration:none">↗ Maps</a>'
+            f'</div>'
+        )
+    # ── END MAP SYSTEM ───────────────────────────────────────
+
     bars_html = ""
     for label, score in entry["predictions"]:
-        kw_hit = any(k in label.lower() for k in THREAT_KEYWORDS)
+        kw_hit = any(k in label.lower() for k in st.session_state.get("kw_flat", []))
         if kw_hit and score >= threshold:
             clr = BAR_COLORS["threat"]
         elif kw_hit:
@@ -808,17 +973,14 @@ def render_result_card(entry, threshold=THREAT_THRESHOLD):
         f'<div><span style="font-family:Share Tech Mono,monospace;font-size:12px;color:#3a4a60">'
         f'{entry["time"]}{dur_note} · {entry["source"]}</span>{cat_pill}</div>'
         f'{badge}</div>'
-        f'{threat_block}{bars_html}{saved_note}'
+        f'{threat_block}{bars_html}{saved_note}{loc_note}'  # ← loc_note added here
         f'</div>',
         unsafe_allow_html=True
     )
 
-    # render_predictions(entry["predictions"], entry["is_threat"], threshold)
-    # if saved_note:
-    #     st.markdown(saved_note, unsafe_allow_html=True)
 
 def render_active_threat_alert(entry):
-    cat   = entry.get("threat_category", "unknown")
+    cat = entry.get("threat_category", "unknown")
     st.markdown(f"""
     <div class="alert-banner">
       <div class="alert-title">⚠ THREAT DETECTED — {cat.upper() if cat else "UNKNOWN"}</div>
@@ -831,6 +993,7 @@ def render_active_threat_alert(entry):
       </div>
     </div>
     """, unsafe_allow_html=True)
+
 
 def render_stats():
     s = st.session_state.stats
@@ -849,6 +1012,7 @@ def render_stats():
               <div class="num" style="color:{clr}">{num}</div>
               <div class="lbl">{lbl}</div>
             </div>""", unsafe_allow_html=True)
+
 
 # ──────────────────────────────────────────────────────────────
 #  MAIN HEADER
@@ -901,22 +1065,16 @@ render_stats()
 st.markdown("<br>", unsafe_allow_html=True)
 
 # ──────────────────────────────────────────────────────────────
-#  TABS
+#  TABS  (🗺 Threat Map added as 7th tab)
 # ──────────────────────────────────────────────────────────────
-# tab_file, tab_mic, tab_log, tab_timeline, tab_clips = st.tabs([
-#     "📂  File / Upload",
-#     "🎙️  Microphone Monitor",
-#     "📋  Detection Log",
-#     "📈  Threat Timeline",
-#     "🔊  Saved Clips",
-# ])
 TAB_OPTIONS = [
     "📂 File / Upload",
     "🎙️ Microphone Monitor",
     "📋 Detection Log",
     "📈 Threat Timeline",
     "🔊  Saved Clips",
-    "🔧 Keyword Manager", 
+    "🔧 Keyword Manager",
+    "🗺 Threat Map",       # ── MAP SYSTEM ── NEW TAB
 ]
 
 _tab_index = TAB_OPTIONS.index(st.session_state.active_tab_name) \
@@ -925,10 +1083,10 @@ _tab_index = TAB_OPTIONS.index(st.session_state.active_tab_name) \
 selected_tab = st.radio(
     "Navigation",
     TAB_OPTIONS,
-    index=_tab_index,                  
+    index=_tab_index,
     horizontal=True,
-    key="main_navigation",            
-    label_visibility="collapsed",      
+    key="main_navigation",
+    label_visibility="collapsed",
 )
 
 st.session_state.active_tab_name = selected_tab
@@ -965,6 +1123,10 @@ if selected_tab == "📂 File / Upload":
                             is_thr, tlabel, tscore, tcat = check_threat(preds)
                             os.unlink(tmp_path)
 
+                            # ── MAP SYSTEM ── fetch location for file analysis entry ──
+                            f_lat, f_lon = get_current_location()
+                            # ── END MAP SYSTEM ───────────────────────────────────────
+
                             entry = dict(
                                 time=datetime.now().strftime("%H:%M:%S"),
                                 timestamp=datetime.now(),
@@ -977,6 +1139,10 @@ if selected_tab == "📂 File / Upload":
                                 source=uploaded.name,
                                 duration=round(duration, 2),
                                 interval=None,
+                                # ── MAP SYSTEM ── coordinates ──
+                                latitude=f_lat,
+                                longitude=f_lon,
+                                # ── END MAP SYSTEM ───────────
                             )
                             st.session_state.results_log.insert(0, entry)
                             st.session_state.stats["total"] += 1
@@ -984,6 +1150,8 @@ if selected_tab == "📂 File / Upload":
                                 st.session_state.stats["threats"] += 1
                                 st.session_state.active_threat = entry
                                 st.session_state.threat_history.insert(0, entry)
+                                # ── MAP SYSTEM ── invalidate map cache ──
+                                st.session_state.map_threat_count += 1
                             else:
                                 st.session_state.stats["safe"] += 1
 
@@ -1043,6 +1211,9 @@ if selected_tab == "📂 File / Upload":
                 else:
                     prog = st.progress(0, text="Starting batch…")
                     batch_threats = 0
+                    # ── MAP SYSTEM ── get location once before batch loop ──
+                    b_lat, b_lon = get_current_location()
+                    # ── END MAP SYSTEM ────────────────────────────────────
                     for i, f in enumerate(files):
                         prog.progress((i + 1) / len(files), text=f"Analysing {f}…")
                         path = os.path.join(folder_path, f)
@@ -1063,6 +1234,10 @@ if selected_tab == "📂 File / Upload":
                                 source=f,
                                 duration=round(len(waveform) / SAMPLE_RATE, 2),
                                 interval=None,
+                                # ── MAP SYSTEM ── coordinates ──
+                                latitude=b_lat,
+                                longitude=b_lon,
+                                # ── END MAP SYSTEM ───────────
                             )
                             st.session_state.results_log.insert(0, entry)
                             st.session_state.stats["total"] += 1
@@ -1070,6 +1245,8 @@ if selected_tab == "📂 File / Upload":
                                 st.session_state.stats["threats"] += 1
                                 st.session_state.threat_history.insert(0, entry)
                                 batch_threats += 1
+                                # ── MAP SYSTEM ── invalidate map cache ──
+                                st.session_state.map_threat_count += 1
                                 if st.session_state.active_threat is None:
                                     st.session_state.active_threat = entry
                             else:
@@ -1156,6 +1333,9 @@ elif selected_tab == "🎙️ Microphone Monitor":
             st.session_state.audio_buf  = []
             st.session_state.buf_lock   = threading.Lock()
             st.session_state._result_q  = rq
+            # ── MAP SYSTEM ── grab location before spawning thread ──
+            mic_lat, mic_lon = get_current_location()
+            # ── END MAP SYSTEM ────────────────────────────────────
             t = threading.Thread(
                 target=mic_worker,
                 args=(
@@ -1164,6 +1344,8 @@ elif selected_tab == "🎙️ Microphone Monitor":
                     st.session_state.audio_buf,
                     st.session_state.buf_lock,
                     rq, THREAT_SAVE_DIR, THREAT_THRESHOLD,
+                    dict(st.session_state.kw_data),
+                    mic_lat, mic_lon,   # ← pass coordinates
                 ),
                 daemon=True,
             )
@@ -1190,6 +1372,8 @@ elif selected_tab == "🎙️ Microphone Monitor":
                         st.session_state.stats["saved"] += 1
                     st.session_state.active_threat = entry
                     st.session_state.threat_history.insert(0, entry)
+                    # ── MAP SYSTEM ── invalidate map cache on new threat ──
+                    st.session_state.map_threat_count += 1
                 else:
                     st.session_state.stats["safe"] += 1
 
@@ -1235,6 +1419,8 @@ elif selected_tab == "📋 Detection Log":
             st.session_state.threat_history = []
             st.session_state.active_threat  = None
             st.session_state.stats = dict(total=0, threats=0, safe=0, saved=0, intervals=0)
+            # ── MAP SYSTEM ── reset map threat count ──
+            st.session_state.map_threat_count = 0
             st.rerun()
 
     filtered = log
@@ -1291,11 +1477,27 @@ elif selected_tab == "📈 Threat Timeline":
         st.markdown("<br>", unsafe_allow_html=True)
         st.markdown("##### Recent Threats")
         for entry in th[:20]:
-            cat   = entry.get("threat_category", "unknown") or "unknown"
-            color = CATEGORY_COLORS.get(cat, "#ff4d6d")
+            cat        = entry.get("threat_category", "unknown") or "unknown"
+            color      = CATEGORY_COLORS.get(cat, "#ff4d6d")
             badge_text = "#ffffff" if cat == "vehicle" else "#020617"
-            conf  = int(entry.get("threat_score", 0) * 100)
-            saved = "💾" if entry.get("saved") else ""
+            conf       = int(entry.get("threat_score", 0) * 100)
+            saved      = "💾" if entry.get("saved") else ""
+
+            # ── MAP SYSTEM ── coordinates + Google Maps link for timeline ──
+            lat = entry.get("latitude")
+            lon = entry.get("longitude")
+            if lat and lon:
+                maps_url  = f"https://www.google.com/maps?q={lat},{lon}"
+                coord_html = (
+                    f'<a href="{maps_url}" target="_blank" '
+                    f'style="font-family:Share Tech Mono,monospace;font-size:10px;'
+                    f'color:#4fc3f7;text-decoration:none;margin-left:8px">'
+                    f'📍 {lat:.4f}, {lon:.4f} ↗</a>'
+                )
+            else:
+                coord_html = ""
+            # ── END MAP SYSTEM ─────────────────────────────────────────────
+
             st.markdown(f"""
             <div style="display:flex;align-items:center;gap:14px;
                         border:1px solid #334155;border-left:5px solid {color};
@@ -1314,6 +1516,7 @@ elif selected_tab == "📈 Threat Timeline":
                            font-weight:700;color:{color};min-width:52px">{conf}%</span>
               <span style="font-family:Rajdhani,sans-serif;font-size:13px;
                            font-weight:600;color:#cbd5e1;min-width:92px">{entry.get('source','')}</span>
+              {coord_html}
               <span style="font-size:16px;min-width:20px;text-align:center">{saved}</span>
             </div>
             """, unsafe_allow_html=True)
@@ -1330,15 +1533,13 @@ elif selected_tab == "🔊  Saved Clips":
         unsafe_allow_html=True,
     )
 
-    # ── Controls row ─────────────────────────────────────────
     ctrl1, ctrl2, ctrl3, ctrl4 = st.columns([1.2, 1.2, 1.2, 2])
     with ctrl1:
         if st.button("🔄 Refresh List", use_container_width=True):
             st.rerun()
     with ctrl2:
         clip_sort = st.selectbox(
-            "Sort clips",
-            ["Newest first", "Oldest first"],
+            "Sort clips", ["Newest first", "Oldest first"],
             label_visibility="collapsed",
         )
     with ctrl3:
@@ -1356,7 +1557,6 @@ elif selected_tab == "🔊  Saved Clips":
             help="Path to the folder where threat clips are saved",
         )
 
-    # ── Scan directory ───────────────────────────────────────
     scan_dir = custom_dir.strip() or THREAT_SAVE_DIR
     clip_files = []
     if os.path.isdir(scan_dir):
@@ -1365,20 +1565,15 @@ elif selected_tab == "🔊  Saved Clips":
                 fp = os.path.join(scan_dir, fn)
                 clip_files.append((fn, fp, os.path.getmtime(fp)))
 
-    # ── Filter by category (match against threat_history) ───
     if clip_cat_filter != "All categories":
         matched_fns = set()
         for e in st.session_state.threat_history:
-            if (e.get("saved") and
-                    e.get("threat_category") == clip_cat_filter):
+            if (e.get("saved") and e.get("threat_category") == clip_cat_filter):
                 matched_fns.add(os.path.basename(e["saved"]))
-        # Keep clips with a match OR unmatched files shown when filter is "All"
         clip_files = [c for c in clip_files if c[0] in matched_fns]
 
-    # ── Sort ─────────────────────────────────────────────────
     clip_files.sort(key=lambda x: x[2], reverse=(clip_sort == "Newest first"))
 
-    # ── Summary bar ──────────────────────────────────────────
     if clip_files:
         total_size_kb = sum(os.path.getsize(fp) for _, fp, _ in clip_files) / 1024
         st.markdown(
@@ -1390,7 +1585,6 @@ elif selected_tab == "🔊  Saved Clips":
             unsafe_allow_html=True,
         )
 
-        # Delete All button (right-aligned)
         _, del_all_col = st.columns([5, 1])
         with del_all_col:
             if st.button("🗑 Delete All", use_container_width=True):
@@ -1398,6 +1592,10 @@ elif selected_tab == "🔊  Saved Clips":
                 for _, fp, _ in clip_files:
                     try:
                         os.remove(fp)
+                        # ── MAP SYSTEM ── also remove companion JSON ──
+                        json_p = os.path.splitext(fp)[0] + ".json"
+                        if os.path.exists(json_p):
+                            os.remove(json_p)
                         deleted += 1
                     except Exception:
                         pass
@@ -1411,9 +1609,7 @@ elif selected_tab == "🔊  Saved Clips":
 
         st.markdown("<br>", unsafe_allow_html=True)
 
-        # ── Per-clip cards ───────────────────────────────────
         for fn, fp, mtime in clip_files:
-            # Parse friendly timestamp from filename
             try:
                 parts   = fn.replace("threat_", "").replace(".wav", "").split("_")
                 d, t    = parts[0], parts[1]
@@ -1421,7 +1617,6 @@ elif selected_tab == "🔊  Saved Clips":
             except Exception:
                 friendly = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M:%S")
 
-            # Try to get audio duration via soundfile
             dur_str = "—"
             try:
                 info    = sf.info(fp)
@@ -1429,19 +1624,31 @@ elif selected_tab == "🔊  Saved Clips":
             except Exception:
                 pass
 
-            # Match with session threat history for extra metadata
             matched_entry = next(
                 (e for e in st.session_state.threat_history
                  if e.get("saved") and os.path.basename(e["saved"]) == fn),
                 None,
             )
 
-            # Build category pill + label
+            # ── MAP SYSTEM ── try to load metadata from companion JSON ──
+            clip_meta = {}
+            json_p = os.path.splitext(fp)[0] + ".json"
+            if os.path.exists(json_p):
+                try:
+                    with open(json_p) as jf:
+                        clip_meta = json.load(jf)
+                except Exception:
+                    pass
+            # ── END MAP SYSTEM ────────────────────────────────────────
+
             if matched_entry:
-                cat   = matched_entry.get("threat_category", "unknown") or "unknown"
-                color = CATEGORY_COLORS.get(cat, "#78909c")
-                conf  = int(matched_entry.get("threat_score", 0) * 100)
+                cat       = matched_entry.get("threat_category", "unknown") or "unknown"
+                color     = CATEGORY_COLORS.get(cat, "#78909c")
+                conf      = int(matched_entry.get("threat_score", 0) * 100)
                 det_label = matched_entry.get("threat_label", "")
+                # ── MAP SYSTEM ── enrich with JSON metadata if matched_entry lacks coords ──
+                c_lat = matched_entry.get("latitude") or clip_meta.get("latitude")
+                c_lon = matched_entry.get("longitude") or clip_meta.get("longitude")
                 meta_html = (
                     f'<span style="background:#0a1020;border:1px solid {color};color:{color};'
                     f'font-family:Share Tech Mono,monospace;font-size:10px;padding:2px 9px;'
@@ -1455,6 +1662,22 @@ elif selected_tab == "🔊  Saved Clips":
             else:
                 meta_html    = '<span style="color:#ffffff;font-size:11px;font-family:Share Tech Mono,monospace"></span>'
                 border_color = "#ff224455"
+                c_lat = clip_meta.get("latitude")
+                c_lon = clip_meta.get("longitude")
+
+            # ── MAP SYSTEM ── coordinates line for clip card ──
+            coord_line = ""
+            if c_lat and c_lon:
+                maps_url   = f"https://www.google.com/maps?q={c_lat},{c_lon}"
+                coord_line = (
+                    f'<div style="font-family:Share Tech Mono,monospace;font-size:10px;'
+                    f'color:#4fc3f7;margin-top:4px">'
+                    f'📍 {c_lat:.5f}, {c_lon:.5f} &nbsp;'
+                    f'<a href="{maps_url}" target="_blank" '
+                    f'style="color:#4fc3f7;text-decoration:none">↗ Google Maps</a>'
+                    f'</div>'
+                )
+            # ── END MAP SYSTEM ────────────────────────────────
 
             st.markdown(f"""
             <div style="background:#120810;border:1px solid {border_color};border-radius:8px;
@@ -1467,11 +1690,11 @@ elif selected_tab == "🔊  Saved Clips":
                              color:#ffffff;margin-left:auto">⏱ {dur_str}</span>
               </div>
               <div style="font-family:Share Tech Mono,monospace;font-size:10px;
-                          color:#ffffff;margin-bottom:8px">📁 {fp}</div>
+                          color:#ffffff;margin-bottom:4px">📁 {fp}</div>
+              {coord_line}
             </div>
             """, unsafe_allow_html=True)
 
-            # Native Streamlit audio player — fully functional
             try:
                 with open(fp, "rb") as af:
                     audio_bytes = af.read()
@@ -1479,12 +1702,14 @@ elif selected_tab == "🔊  Saved Clips":
             except Exception as e:
                 st.warning(f"Could not load audio for playback: {e}")
 
-            # Delete individual clip
             del_c, _ = st.columns([1, 6])
             with del_c:
                 if st.button(f"🗑 Delete clip", key=f"del_{fn}", use_container_width=True):
                     try:
                         os.remove(fp)
+                        # ── MAP SYSTEM ── delete companion JSON too ──
+                        if os.path.exists(json_p):
+                            os.remove(json_p)
                         for e in st.session_state.threat_history:
                             if e.get("saved") and os.path.basename(e["saved"]) == fn:
                                 e["saved"] = None
@@ -1493,10 +1718,7 @@ elif selected_tab == "🔊  Saved Clips":
                     except Exception as ex:
                         st.error(f"Could not delete: {ex}")
 
-            st.markdown(
-                "<hr style='border-color:#1e2a40;margin:6px 0 14px'>",
-                unsafe_allow_html=True,
-            )
+            st.markdown("<hr style='border-color:#1e2a40;margin:6px 0 14px'>", unsafe_allow_html=True)
 
     else:
         no_dir_note = (
@@ -1513,12 +1735,11 @@ elif selected_tab == "🔊  Saved Clips":
             f'</div>',
             unsafe_allow_html=True,
         )
-        
+
 # ══════════════════════════════════════════════════════════════
 #  TAB 6 – KEYWORD MANAGER
 # ══════════════════════════════════════════════════════════════
 elif selected_tab == "🔧 Keyword Manager":
-
     st.markdown(
         '<div style="font-family:Share Tech Mono,monospace;font-size:11px;color:#3a4a60;'
         'margin-bottom:18px">Manage threat detection keywords dynamically. '
@@ -1528,7 +1749,6 @@ elif selected_tab == "🔧 Keyword Manager":
 
     kw_data = st.session_state.kw_data
 
-    # ── Add New Category ─────────────────────────────────────
     with st.expander("➕ Add New Category", expanded=False):
         new_cat_name = st.text_input("Category name", placeholder="e.g. animal",
                                      key="new_cat_input")
@@ -1547,9 +1767,8 @@ elif selected_tab == "🔧 Keyword Manager":
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # ── Per-Category Editors ─────────────────────────────────
     for cat in list(kw_data.keys()):
-        color = CATEGORY_COLORS.get(cat, "#78909c")
+        color    = CATEGORY_COLORS.get(cat, "#78909c")
         keywords = kw_data[cat]
 
         st.markdown(
@@ -1562,7 +1781,6 @@ elif selected_tab == "🔧 Keyword Manager":
             unsafe_allow_html=True,
         )
 
-        # Keyword chips
         chips_html = ""
         for kw in keywords:
             chips_html += (
@@ -1573,10 +1791,8 @@ elif selected_tab == "🔧 Keyword Manager":
                 f'{kw}</span>'
             )
         if chips_html:
-            st.markdown(
-                f'<div style="margin-bottom:8px;line-height:2">{chips_html}</div>',
-                unsafe_allow_html=True,
-            )
+            st.markdown(f'<div style="margin-bottom:8px;line-height:2">{chips_html}</div>',
+                        unsafe_allow_html=True)
         else:
             st.markdown(
                 '<div style="font-family:Share Tech Mono,monospace;font-size:11px;'
@@ -1588,12 +1804,9 @@ elif selected_tab == "🔧 Keyword Manager":
 
         with col_add:
             new_kw = st.text_input(
-                "Add keyword",
-                placeholder="Type keyword…",
-                key=f"add_kw_{cat}",
-                label_visibility="collapsed",
+                "Add keyword", placeholder="Type keyword…",
+                key=f"add_kw_{cat}", label_visibility="collapsed",
             )
-            # Suggestions
             suggestions = get_keyword_suggestions(new_kw, st.session_state.kw_flat)
             if suggestions:
                 st.markdown(
@@ -1625,10 +1838,8 @@ elif selected_tab == "🔧 Keyword Manager":
         with col_remove:
             if keywords:
                 kw_to_remove = st.selectbox(
-                    "Remove keyword",
-                    ["— select —"] + keywords,
-                    key=f"rm_sel_{cat}",
-                    label_visibility="collapsed",
+                    "Remove keyword", ["— select —"] + keywords,
+                    key=f"rm_sel_{cat}", label_visibility="collapsed",
                 )
                 if st.button("🗑 Remove", key=f"rm_btn_{cat}"):
                     if kw_to_remove != "— select —":
@@ -1638,21 +1849,8 @@ elif selected_tab == "🔧 Keyword Manager":
                         st.success(f"Removed '{kw_to_remove}' from {cat}.")
                         st.rerun()
 
-        # with col_del:
-        #     st.markdown("<br>", unsafe_allow_html=True)
-        #     if st.button("🗑 Delete Category", key=f"del_cat_{cat}"):
-        #         del kw_data[cat]
-        #         save_threat_keywords_json(kw_data)
-        #         reload_keywords_into_session()
-        #         st.warning(f"Category '{cat}' deleted.")
-        #         st.rerun()
+        st.markdown("<hr style='border-color:#c8e0c8;margin:12px 0'>", unsafe_allow_html=True)
 
-        st.markdown(
-            f"<hr style='border-color:#c8e0c8;margin:12px 0'>",
-            unsafe_allow_html=True,
-        )
-
-    # ── Summary ──────────────────────────────────────────────
     total_kw = sum(len(v) for v in kw_data.values())
     st.markdown(
         f'<div style="font-family:Share Tech Mono,monospace;font-size:12px;color:#5a7a5a;'
@@ -1660,3 +1858,147 @@ elif selected_tab == "🔧 Keyword Manager":
         f'Auto-saved to threat_keywords.json</div>',
         unsafe_allow_html=True,
     )
+
+
+# ══════════════════════════════════════════════════════════════
+#  ── MAP SYSTEM ── TAB 7 – THREAT MAP
+# ══════════════════════════════════════════════════════════════
+elif selected_tab == "🗺 Threat Map":
+
+    th = st.session_state.threat_history
+    geo_source = st.session_state.get("geo_source", "fallback")
+    cur_lat    = st.session_state.get("current_lat", MAP_FALLBACK_LAT)
+    cur_lon    = st.session_state.get("current_lon", MAP_FALLBACK_LON)
+
+    # ── Header row ───────────────────────────────────────────
+    hdr_left, hdr_right = st.columns([3, 1])
+    with hdr_left:
+        st.markdown("#### 🗺 Live Threat Map")
+        st.markdown(
+            '<div style="font-family:Share Tech Mono,monospace;font-size:11px;color:#3a4a60;'
+            'margin-bottom:12px">All detected threats are plotted in real-time. '
+            'Click any marker for full details. Map auto-centers on the latest threat.</div>',
+            unsafe_allow_html=True,
+        )
+    with hdr_right:
+        if st.button("🔄 Refresh Map", use_container_width=True):
+            st.rerun()
+
+    # ── GPS status bar ───────────────────────────────────────
+    geo_icon  = "🌐" if geo_source == "browser" else "📍"
+    geo_label = "Browser GPS" if geo_source == "browser" else "Fallback location"
+    st.markdown(
+        f'<div style="background:#f0f7f0;border:1.5px solid #b8d8b8;border-radius:8px;'
+        f'padding:8px 16px;font-family:Share Tech Mono,monospace;font-size:12px;'
+        f'color:#2d5a2d;margin-bottom:16px;display:inline-block">'
+        f'{geo_icon} {geo_label}: {cur_lat:.5f}, {cur_lon:.5f} &nbsp;·&nbsp; '
+        f'<span style="color:#ff2244">{len(th)}</span> threats plotted'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
+    # ── Summary stats tiles ──────────────────────────────────
+    geo_threats = [e for e in th if e.get("latitude") and e.get("longitude")]
+    cats_on_map = {}
+    for e in geo_threats:
+        c = e.get("threat_category", "unknown") or "unknown"
+        cats_on_map[c] = cats_on_map.get(c, 0) + 1
+
+    if cats_on_map:
+        tile_cols = st.columns(min(len(cats_on_map), 5))
+        for col, (cat, cnt) in zip(tile_cols, cats_on_map.items()):
+            color = CATEGORY_COLORS.get(cat, "#78909c")
+            with col:
+                st.markdown(
+                    f'<div class="metric-tile">'
+                    f'<div class="num" style="color:{color}">{cnt}</div>'
+                    f'<div class="lbl" style="color:{color}">{cat.upper()}</div>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+        st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── Color legend ─────────────────────────────────────────
+    legend_items = [
+        ("weapon",        "red",       "#ff2244"),
+        ("tool",          "orange",    "#ffa726"),
+        ("vehicle",       "purple",    "#ab47bc"),
+        ("emergency",     "darkred",   "#ff7043"),
+        ("industrial",    "blue",      "#66bb6a"),
+        ("environmental", "green",     "#29b6f6"),
+        ("unknown",       "gray",      "#78909c"),
+    ]
+    legend_html = '<div style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:16px">'
+    for cat, _, color in legend_items:
+        legend_html += (
+            f'<span style="display:inline-flex;align-items:center;gap:5px;'
+            f'font-family:Share Tech Mono,monospace;font-size:11px;color:#2d4a2d">'
+            f'<span style="display:inline-block;width:12px;height:12px;border-radius:50%;'
+            f'background:{color}"></span>{cat.upper()}</span>'
+        )
+    legend_html += '</div>'
+    st.markdown(legend_html, unsafe_allow_html=True)
+
+    # ── Build and render the folium map ─────────────────────
+    # Use map_threat_count as a cache-bust key so the map only rebuilds
+    # when new threats arrive, not on every Streamlit rerun.
+    threat_map = create_threat_map(th, cur_lat, cur_lon)
+
+    map_data = st_folium(
+        threat_map,
+        width="100%",
+        height=520,
+        returned_objects=["last_object_clicked"],
+        key="threat_map_main",   # ← static key
+    )
+
+    # ── Clicked-marker detail panel ──────────────────────────
+    if map_data and map_data.get("last_object_clicked"):
+        clicked = map_data["last_object_clicked"]
+        c_lat   = clicked.get("lat")
+        c_lng   = clicked.get("lng")
+        if c_lat and c_lng:
+            # Find the closest threat entry to the clicked point
+            def dist(e):
+                return abs(e.get("latitude", 0) - c_lat) + abs(e.get("longitude", 0) - c_lng)
+            matching = [e for e in geo_threats if e.get("latitude") and e.get("longitude")]
+            if matching:
+                closest = min(matching, key=dist)
+                cat     = closest.get("threat_category", "unknown") or "unknown"
+                color   = CATEGORY_COLORS.get(cat, "#78909c")
+                conf    = int(closest.get("threat_score", 0) * 100)
+                maps_u  = f"https://www.google.com/maps?q={closest['latitude']},{closest['longitude']}"
+                st.markdown(
+                    f'<div style="background:#fff8f8;border:2px solid {color};'
+                    f'border-radius:10px;padding:16px 20px;margin-top:16px">'
+                    f'<div style="font-family:Share Tech Mono,monospace;font-size:13px;'
+                    f'color:{color};font-weight:700;margin-bottom:8px">'
+                    f'⚠ {closest.get("threat_label","Unknown")} — {cat.upper()}</div>'
+                    f'<div style="font-size:14px;color:#2d4a2d">'
+                    f'<b>Confidence:</b> {conf}% &nbsp;·&nbsp; '
+                    f'<b>Time:</b> {closest.get("time","")} &nbsp;·&nbsp; '
+                    f'<b>Source:</b> {closest.get("source","")} &nbsp;·&nbsp; '
+                    f'<b>Coords:</b> {closest["latitude"]:.5f}, {closest["longitude"]:.5f}'
+                    f'{"&nbsp;·&nbsp; 💾 Clip saved" if closest.get("saved") else ""}'
+                    f'</div>'
+                    f'<a href="{maps_u}" target="_blank" '
+                    f'style="font-family:Share Tech Mono,monospace;font-size:12px;'
+                    f'color:#1a73e8;text-decoration:none;display:inline-block;margin-top:6px">'
+                    f'🗺 Open in Google Maps ↗</a>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+
+    # ── Empty state ──────────────────────────────────────────
+    if not geo_threats:
+        st.markdown(
+            '<div class="waveform-placeholder" style="height:100px;flex-direction:column;gap:8px">'
+            '<span style="font-size:24px">🗺</span>'
+            'NO GEO-TAGGED THREATS YET<br>'
+            '<span style="font-size:10px;color:#8aaa8a">Run microphone monitoring or file analysis '
+            'to populate the map</span>'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+
+# ── END MAP SYSTEM ────────────────────────────────────────────
